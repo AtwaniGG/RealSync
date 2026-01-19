@@ -13,7 +13,53 @@ Software Design Document: https://uowmailedu-my.sharepoint.com/:b:/g/personal/ma
 
 HOLY COMMANDMENTS: 
 
-Always Use git pull before starting work
+Git Workflow Rules
 
+Before starting any work, always pull the latest changes:
 
-Always use git push before you log off
+git pull origin main
+
+All development must be done on a feature branch:
+
+feature/<short-name>
+
+Example:
+feature/audio-detection
+
+How to Commit
+
+Stage your changes:
+
+git add .
+
+Commit using the following format:
+
+git commit -m "feat: short description"
+
+Allowed commit types:
+
+feat (new feature)
+
+fix (bug fix)
+
+refactor (code cleanup or restructuring)
+
+perf (performance improvement)
+
+docs (documentation changes)
+
+chore (maintenance or configuration)
+
+Example commit:
+
+git commit -m "feat: add audio deepfake detection module"
+
+Pushing & Merging
+
+Never push directly to the main branch.
+
+Push only to your feature branch.
+
+Open a Pull Request to merge changes into main.
+
+Ensure the project builds and follows the existing structure before requesting a merge.
