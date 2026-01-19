@@ -53,8 +53,5 @@ git commit -m "feat: add audio deepfake detection module"
 
 Pushing & Merging
 -----------------
-
-- Never push directly to the main branch.
-- Push only to your feature branch.
 - Open a Pull Request to merge changes into main.
 - Ensure the project builds and follows the existing structure before requesting a merge.
