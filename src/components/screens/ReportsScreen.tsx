@@ -220,21 +220,6 @@ export function ReportsScreen({ onNavigate, onSignOut, profilePhoto, userName, u
               </div>
             </div>
           </div>
-
-          {/* Upgrade Card */}
-          <div className="mt-6 bg-gradient-to-r from-blue-600/20 to-purple-600/20 border border-blue-500/30 rounded-xl p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-white text-lg mb-1">Upgrade to Premium</h3>
-                <p className="text-gray-300 text-sm">
-                  Get unlimited reports, advanced analytics, and priority support
-                </p>
-              </div>
-              <Button className="bg-gradient-to-r from-cyan-400 to-blue-500 hover:from-cyan-500 hover:to-blue-600 text-white">
-                Upgrade Plan
-              </Button>
-            </div>
-          </div>
         </div>
       </div>
     </div>
