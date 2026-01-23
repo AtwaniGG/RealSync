@@ -541,33 +541,6 @@ function NotificationSettings() {
             </div>
           </div>
         </div>
-
-        {/* Push Notifications */}
-        <div className="bg-[#1a1a2e] rounded-xl p-6 border border-gray-800">
-          <h3 className="text-white text-lg mb-4">Push Notifications</h3>
-          
-          <div className="space-y-4">
-            <div className="flex items-center justify-between py-3 border-b border-gray-800">
-              <div>
-                <p className="text-white mb-1">Real-Time Alerts</p>
-                <p className="text-gray-400 text-sm">
-                  Instant notifications during live meetings
-                </p>
-              </div>
-              <Switch defaultChecked />
-            </div>
-            
-            <div className="flex items-center justify-between py-3">
-              <div>
-                <p className="text-white mb-1">Report Ready Alerts</p>
-                <p className="text-gray-400 text-sm">
-                  Notify when analysis reports are complete
-                </p>
-              </div>
-              <Switch />
-            </div>
-          </div>
-        </div>
       </div>
 
       <div className="mt-8 flex justify-end gap-4">
