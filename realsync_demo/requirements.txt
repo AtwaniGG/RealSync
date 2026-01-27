@@ -7,3 +7,4 @@ torchaudio
 fer
 moviepy
 scikit-learn
+tensorflow
