@@ -175,20 +175,6 @@ function GeneralSettings({ profilePhoto, onSaveProfilePhoto, userName, onSaveUse
             
             <div className="space-y-4">
               <div>
-                <Label className="text-gray-300 mb-2">Language</Label>
-                <Select defaultValue="en">
-                  <SelectTrigger className="bg-[#2a2a3e] border-gray-700 text-white">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-[#2a2a3e] border-gray-700">
-                    <SelectItem value="en">English (US)</SelectItem>
-                    <SelectItem value="es">Spanish</SelectItem>
-                    <SelectItem value="fr">French</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              
-              <div>
                 <Label className="text-gray-300 mb-2">Time Zone</Label>
                 <Select defaultValue="pst">
                   <SelectTrigger className="bg-[#2a2a3e] border-gray-700 text-white">
