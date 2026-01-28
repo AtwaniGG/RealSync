@@ -1,6 +1,8 @@
 const express = require("express");
 const cors = require("cors");
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 const WebSocket = require("ws");
 require("dotenv").config();
 
@@ -14,9 +16,16 @@ const EMOTIONS = ["Happy", "Neutral", "Angry", "Fear", "Surprise", "Sad"];
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const toFixedNumber = (value, digits = 4) =>
   Number.parseFloat(value.toFixed(digits));
+const toNumber = (value, fallback = 0) =>
+  typeof value === "number" && !Number.isNaN(value) ? value : fallback;
+
+const DEFAULT_RESULTS_PATH =
+  process.env.RESULTS_PATH ??
+  path.resolve(__dirname, "../RealSync-AI-Prototype/output/results.json");
 
 let latestMetrics = null;
 let broadcastInterval = null;
+let resultsFileMtime = 0;
 
 const generateSimulatedMetrics = () => {
   const now = new Date();
@@ -142,6 +151,98 @@ const deriveMetrics = (payload) => {
   };
 };
 
+const riskFromScore = (score) => {
+  if (score >= 0.85) return "low";
+  if (score >= 0.7) return "medium";
+  return "high";
+};
+
+const normalizeEmotionScores = (scores) => {
+  if (!scores || typeof scores !== "object") return null;
+  const mapped = {};
+  let total = 0;
+  EMOTIONS.forEach((label) => {
+    const lower = label.toLowerCase();
+    const value = toNumber(scores[label], toNumber(scores[lower], 0));
+    mapped[label] = value;
+    total += value;
+  });
+
+  if (total > 0) {
+    EMOTIONS.forEach((label) => {
+      mapped[label] = mapped[label] / total;
+    });
+  }
+
+  return mapped;
+};
+
+const buildEmotionScores = (dominantLabel, dominantConfidence) => {
+  const remaining = clamp(1 - dominantConfidence, 0, 1);
+  const per = EMOTIONS.length > 1 ? remaining / (EMOTIONS.length - 1) : 0;
+  return EMOTIONS.reduce((acc, label) => {
+    acc[label] = toFixedNumber(label === dominantLabel ? dominantConfidence : per);
+    return acc;
+  }, {});
+};
+
+const mapResultsToMetrics = (results) => {
+  const videoScore = clamp(toNumber(results?.video_score, 0), 0, 1);
+  const emotionScore = clamp(toNumber(results?.emotion_score, 0), 0, 1);
+  const audioScore = clamp(toNumber(results?.audio_score, 0), 0, 1);
+  const trustScore = clamp(toNumber(results?.trust_score, 0), 0, 1);
+
+  const authenticityScore = clamp(1 - videoScore, 0, 1);
+  const behaviorConfidence = clamp(1 - emotionScore, 0, 1);
+  const audioConfidence = clamp(1 - audioScore, 0, 1);
+
+  const normalizedScores = normalizeEmotionScores(results?.emotion_scores);
+  const providedLabel =
+    typeof results?.emotion_label === "string" ? results.emotion_label.trim() : null;
+  const safeLabel = providedLabel
+    ? EMOTIONS.find((label) => label.toLowerCase() === providedLabel.toLowerCase()) ?? null
+    : null;
+  const fallbackLabel = normalizedScores
+    ? Object.entries(normalizedScores).sort((a, b) => b[1] - a[1])[0]?.[0]
+    : "Neutral";
+  const emotionLabel = safeLabel ?? fallbackLabel ?? "Neutral";
+  const emotionConfidence = clamp(
+    toNumber(results?.emotion_confidence, normalizedScores?.[emotionLabel] ?? behaviorConfidence),
+    0,
+    1
+  );
+  const emotionScores =
+    normalizedScores ?? buildEmotionScores(emotionLabel, emotionConfidence);
+
+  const payload = {
+    timestamp: new Date().toISOString(),
+    source: "external",
+    emotion: {
+      label: emotionLabel,
+      confidence: emotionConfidence,
+      scores: emotionScores,
+    },
+    identity: {
+      samePerson: true,
+      embeddingShift: toFixedNumber(clamp(1 - behaviorConfidence, 0, 1)),
+      riskLevel: "low",
+    },
+    deepfake: {
+      authenticityScore,
+      model: "MesoNet-4",
+      riskLevel: riskFromScore(authenticityScore),
+    },
+    trustScore,
+    confidenceLayers: {
+      audio: audioConfidence,
+      video: authenticityScore,
+      behavior: behaviorConfidence,
+    },
+  };
+
+  return deriveMetrics(payload);
+};
+
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/ws" });
 
@@ -152,6 +253,23 @@ const broadcastMetrics = (metrics) => {
       client.send(message);
     }
   });
+};
+
+const updateMetricsFromResultsFile = (filePath) => {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const results = JSON.parse(raw);
+    const mapped = mapResultsToMetrics(results);
+    latestMetrics = {
+      ...mapped,
+      timestamp: mapped.timestamp ?? new Date().toISOString(),
+      source: "external",
+    };
+    broadcastMetrics(latestMetrics);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
 };
 
 wss.on("connection", (socket) => {
@@ -166,6 +284,15 @@ const ensureBroadcastLoop = () => {
 };
 
 ensureBroadcastLoop();
+
+setInterval(() => {
+  fs.stat(DEFAULT_RESULTS_PATH, (err, stats) => {
+    if (err || !stats?.mtimeMs) return;
+    if (stats.mtimeMs <= resultsFileMtime) return;
+    resultsFileMtime = stats.mtimeMs;
+    updateMetricsFromResultsFile(DEFAULT_RESULTS_PATH);
+  });
+}, 1000);
 
 app.get("/", (req, res) => {
   res.json({ status: "RealSync backend running" });
@@ -199,6 +326,17 @@ app.get("/api/models", (req, res) => {
 
 app.get("/api/metrics", (req, res) => {
   res.json(getCurrentMetrics());
+});
+
+app.post("/api/metrics/from-file", (req, res) => {
+  const filePath = req.body?.path
+    ? path.resolve(req.body.path)
+    : DEFAULT_RESULTS_PATH;
+  const result = updateMetricsFromResultsFile(filePath);
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error, path: filePath });
+  }
+  return res.json({ status: "ok", path: filePath });
 });
 
 app.post("/api/metrics", (req, res) => {

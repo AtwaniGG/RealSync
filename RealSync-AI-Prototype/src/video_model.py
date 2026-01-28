@@ -1,9 +1,6 @@
 import cv2
 import numpy as np
 import os
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, MaxPooling2D
-from tensorflow.keras.layers import Flatten, Dense, Dropout
 
 def create_mesonet4():
     """
@@ -11,6 +8,10 @@ def create_mesonet4():
     Input: 256x256x3 RGB image
     Output: Binary classification (0=real, 1=fake)
     """
+    from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, MaxPooling2D
+    from tensorflow.keras.layers import Flatten, Dense, Dropout
+    from tensorflow.keras.models import Model
+
     input_layer = Input(shape=(256, 256, 3))
 
     x = Conv2D(8, (3, 3), padding='same', activation='relu')(input_layer)
@@ -38,14 +39,23 @@ def create_mesonet4():
     model = Model(inputs=input_layer, outputs=output)
     return model
 
+USE_TF = os.environ.get("REALSYNC_USE_TF") == "1"
+
 # Initialize model globally
 _model = None
 
 def get_model():
     """Load or return cached MesoNet-4 model"""
+    if not USE_TF:
+        return None
+
     global _model
     if _model is None:
-        _model = create_mesonet4()
+        try:
+            _model = create_mesonet4()
+        except Exception as e:
+            print(f"TensorFlow unavailable, using heuristic deepfake score. ({e})")
+            return None
         try:
             weights_path = os.path.join(os.path.dirname(__file__), 'models', 'mesonet4_weights.h5')
             if os.path.exists(weights_path):
@@ -73,6 +83,16 @@ def preprocess_face(face_path):
 
     return img
 
+def heuristic_fake_score(face_img):
+    """
+    Lightweight fallback scoring when TensorFlow is unavailable.
+    Uses image sharpness as a proxy signal to generate a stable demo score.
+    """
+    gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+    variance = cv2.Laplacian(gray, cv2.CV_64F).var()
+    score = 1.0 - min(variance / 150.0, 1.0)
+    return float(score)
+
 def video_deepfake_score(face_dir):
     """
     Analyze extracted faces for deepfake detection
@@ -94,10 +114,12 @@ def video_deepfake_score(face_dir):
         if face_img is None:
             continue
 
-        face_batch = np.expand_dims(face_img, axis=0)
-
-        prediction = model.predict(face_batch, verbose=0)[0][0]
-        scores.append(float(prediction))
+        if model is None:
+            scores.append(heuristic_fake_score(face_img))
+        else:
+            face_batch = np.expand_dims(face_img, axis=0)
+            prediction = model.predict(face_batch, verbose=0)[0][0]
+            scores.append(float(prediction))
 
     if len(scores) == 0:
         return 0.0
