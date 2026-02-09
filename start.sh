@@ -3,8 +3,13 @@
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Kill any old processes on our ports first
+echo "Cleaning up old processes..."
+lsof -ti:3000,4000,5100 2>/dev/null | xargs kill -9 2>/dev/null
+sleep 1
+
 echo "Starting RealSync AI Service (port 5100)..."
-cd "$ROOT_DIR/RealSync-AI-Prototype/serve" && python3 app.py &
+cd "$ROOT_DIR/RealSync-AI-Prototype" && python3 -m serve.app &
 AI_PID=$!
 
 echo "Starting RealSync Backend (port 4000)..."

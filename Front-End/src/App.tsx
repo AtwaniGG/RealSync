@@ -166,15 +166,27 @@ export default function App() {
   }, [session?.user?.id, prototypeModeEnabled]);
 
   useEffect(() => {
-    setUserEmail(session?.user?.email ?? undefined);
-  }, [session?.user?.email]);
+    if (!prototypeModeEnabled) {
+      setUserEmail(session?.user?.email ?? undefined);
+    }
+  }, [session?.user?.email, prototypeModeEnabled]);
 
   useEffect(() => {
-    setUserName(profile?.full_name ?? profile?.username ?? undefined);
-    setProfilePhoto(profile?.avatar_url ?? null);
-  }, [profile]);
+    if (!prototypeModeEnabled) {
+      setUserName(profile?.full_name ?? profile?.username ?? undefined);
+      setProfilePhoto(profile?.avatar_url ?? null);
+    }
+  }, [profile, prototypeModeEnabled]);
 
   const handleSignOut = async () => {
+    if (prototypeModeEnabled) {
+      // In prototype mode, just go back to login screen
+      setSession(null);
+      setCurrentScreen('dashboard');
+      setAuthView('login');
+      window.location.reload();
+      return;
+    }
     const { error } = await supabase.auth.signOut();
     if (error) {
       console.error('Failed to sign out', error);
@@ -191,6 +203,40 @@ export default function App() {
   };
 
   const needsOnboarding = !!session?.user?.id && profile?.username == null;
+
+  // Auto-dismiss the connecting screen after 15s if bot never reports connected
+  useEffect(() => {
+    if (!botConnecting) return;
+    const timer = setTimeout(() => setBotConnecting(false), 15000);
+    return () => clearTimeout(timer);
+  }, [botConnecting]);
+
+  const handleStartSession = (sessionId: string, title: string, meetingType: MeetingType) => {
+    setActiveSessionId(sessionId);
+    setActiveMeetingTitle(title);
+    setActiveMeetingType(meetingType);
+    setConnectingTitle(title);
+    setBotConnecting(true);
+    setCurrentScreen('dashboard');
+  };
+
+  const handleEndSession = () => {
+    setActiveSessionId(null);
+    setActiveMeetingTitle(null);
+    setActiveMeetingType(null);
+  };
+
+  // Safety timeout: if loading takes more than 5s, stop waiting
+  useEffect(() => {
+    if (loadingAuth || loadingProfile) {
+      const timeout = setTimeout(() => {
+        console.warn('Loading timeout — forcing load complete');
+        setLoadingAuth(false);
+        setLoadingProfile(false);
+      }, 5000);
+      return () => clearTimeout(timeout);
+    }
+  }, [loadingAuth, loadingProfile]);
 
   if (loadingAuth || (session?.user?.id && loadingProfile)) {
     console.log('Showing loading screen');
@@ -223,28 +269,6 @@ export default function App() {
   }
 
   console.log('Rendering main app, screen:', currentScreen);
-
-  // Auto-dismiss the connecting screen after 15s if bot never reports connected
-  useEffect(() => {
-    if (!botConnecting) return;
-    const timer = setTimeout(() => setBotConnecting(false), 15000);
-    return () => clearTimeout(timer);
-  }, [botConnecting]);
-
-  const handleStartSession = (sessionId: string, title: string, meetingType: MeetingType) => {
-    setActiveSessionId(sessionId);
-    setActiveMeetingTitle(title);
-    setActiveMeetingType(meetingType);
-    setConnectingTitle(title);
-    setBotConnecting(true);
-    setCurrentScreen('dashboard');
-  };
-
-  const handleEndSession = () => {
-    setActiveSessionId(null);
-    setActiveMeetingTitle(null);
-    setActiveMeetingType(null);
-  };
 
   return (
     <>

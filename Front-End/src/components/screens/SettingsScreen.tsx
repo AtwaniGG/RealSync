@@ -263,7 +263,23 @@ function GeneralSettings({ profilePhoto, onSaveProfilePhoto, userName, onSaveUse
               <Upload className="w-4 h-4 mr-2" />
               Upload New Photo
             </Button>
-            
+
+            {profilePhoto && (
+              <Button
+                variant="outline"
+                className="bg-transparent border-red-800 text-red-400 hover:bg-red-950 hover:text-red-300 mb-2"
+                onClick={() => {
+                  if (onSaveProfilePhoto) {
+                    onSaveProfilePhoto(null);
+                    toast.success('Profile photo removed');
+                  }
+                }}
+              >
+                <X className="w-4 h-4 mr-2" />
+                Remove Photo
+              </Button>
+            )}
+
             <p className="text-gray-400 text-xs text-center">
               JPG, PNG or GIF. Max size 2MB.
             </p>
