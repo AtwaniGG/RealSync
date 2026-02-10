@@ -192,6 +192,13 @@ export default function App() {
 
   const needsOnboarding = !!session?.user?.id && profile?.username == null;
 
+  // Auto-dismiss the connecting screen after 15s if bot never reports connected
+  useEffect(() => {
+    if (!botConnecting) return;
+    const timer = setTimeout(() => setBotConnecting(false), 15000);
+    return () => clearTimeout(timer);
+  }, [botConnecting]);
+
   if (loadingAuth || (session?.user?.id && loadingProfile)) {
     console.log('Showing loading screen');
     return (
@@ -223,13 +230,6 @@ export default function App() {
   }
 
   console.log('Rendering main app, screen:', currentScreen);
-
-  // Auto-dismiss the connecting screen after 15s if bot never reports connected
-  useEffect(() => {
-    if (!botConnecting) return;
-    const timer = setTimeout(() => setBotConnecting(false), 15000);
-    return () => clearTimeout(timer);
-  }, [botConnecting]);
 
   const handleStartSession = (sessionId: string, title: string, meetingType: MeetingType) => {
     setActiveSessionId(sessionId);
