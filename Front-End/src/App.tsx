@@ -24,6 +24,13 @@ type Profile = {
   updated_at?: string | null;
 };
 
+/**
+ * Root application component that manages authentication, profile loading, navigation between screens, session lifecycle, and the bot-connecting UI.
+ *
+ * Renders authentication and onboarding flows when needed, or the main app screens (dashboard, sessions, reports, settings, FAQ) along with global UI elements like toasts and the connecting overlay.
+ *
+ * @returns The root JSX element for the application
+ */
 export default function App() {
   console.log('App component mounted');
 
