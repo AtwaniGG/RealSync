@@ -11,7 +11,6 @@ import { SettingsScreen } from './components/screens/SettingsScreen';
 import { FAQScreen } from './components/screens/FAQScreen';
 import { supabase } from './lib/supabaseClient';
 import { isBlockedDomain } from './lib/blockedDomains';
-import { ThemeProvider, useTheme } from './contexts/ThemeContext';
 
 type Screen = 'login' | 'dashboard' | 'sessions' | 'reports' | 'settings' | 'faq';
 type MeetingType = 'official' | 'business' | 'friends';
@@ -26,15 +25,6 @@ type Profile = {
 };
 
 export default function App() {
-  return (
-    <ThemeProvider>
-      <AppInner />
-    </ThemeProvider>
-  );
-}
-
-function AppInner() {
-  const { resolvedTheme } = useTheme();
   console.log('App component mounted');
 
   const [currentScreen, setCurrentScreen] = useState<Screen>('dashboard');
@@ -176,27 +166,15 @@ function AppInner() {
   }, [session?.user?.id, prototypeModeEnabled]);
 
   useEffect(() => {
-    if (!prototypeModeEnabled) {
-      setUserEmail(session?.user?.email ?? undefined);
-    }
-  }, [session?.user?.email, prototypeModeEnabled]);
+    setUserEmail(session?.user?.email ?? undefined);
+  }, [session?.user?.email]);
 
   useEffect(() => {
-    if (!prototypeModeEnabled) {
-      setUserName(profile?.full_name ?? profile?.username ?? undefined);
-      setProfilePhoto(profile?.avatar_url ?? null);
-    }
-  }, [profile, prototypeModeEnabled]);
+    setUserName(profile?.full_name ?? profile?.username ?? undefined);
+    setProfilePhoto(profile?.avatar_url ?? null);
+  }, [profile]);
 
   const handleSignOut = async () => {
-    if (prototypeModeEnabled) {
-      // In prototype mode, just go back to login screen
-      setSession(null);
-      setCurrentScreen('dashboard');
-      setAuthView('login');
-      window.location.reload();
-      return;
-    }
     const { error } = await supabase.auth.signOut();
     if (error) {
       console.error('Failed to sign out', error);
@@ -220,33 +198,6 @@ function AppInner() {
     const timer = setTimeout(() => setBotConnecting(false), 15000);
     return () => clearTimeout(timer);
   }, [botConnecting]);
-
-  const handleStartSession = (sessionId: string, title: string, meetingType: MeetingType) => {
-    setActiveSessionId(sessionId);
-    setActiveMeetingTitle(title);
-    setActiveMeetingType(meetingType);
-    setConnectingTitle(title);
-    setBotConnecting(true);
-    setCurrentScreen('dashboard');
-  };
-
-  const handleEndSession = () => {
-    setActiveSessionId(null);
-    setActiveMeetingTitle(null);
-    setActiveMeetingType(null);
-  };
-
-  // Safety timeout: if loading takes more than 5s, stop waiting
-  useEffect(() => {
-    if (loadingAuth || loadingProfile) {
-      const timeout = setTimeout(() => {
-        console.warn('Loading timeout — forcing load complete');
-        setLoadingAuth(false);
-        setLoadingProfile(false);
-      }, 5000);
-      return () => clearTimeout(timeout);
-    }
-  }, [loadingAuth, loadingProfile]);
 
   if (loadingAuth || (session?.user?.id && loadingProfile)) {
     console.log('Showing loading screen');
@@ -280,9 +231,24 @@ function AppInner() {
 
   console.log('Rendering main app, screen:', currentScreen);
 
+  const handleStartSession = (sessionId: string, title: string, meetingType: MeetingType) => {
+    setActiveSessionId(sessionId);
+    setActiveMeetingTitle(title);
+    setActiveMeetingType(meetingType);
+    setConnectingTitle(title);
+    setBotConnecting(true);
+    setCurrentScreen('dashboard');
+  };
+
+  const handleEndSession = () => {
+    setActiveSessionId(null);
+    setActiveMeetingTitle(null);
+    setActiveMeetingType(null);
+  };
+
   return (
     <>
-      <Toaster position="top-right" theme={resolvedTheme} richColors />
+      <Toaster position="top-right" theme="dark" richColors />
 
       {/* Bot Connecting Loading Screen */}
       {botConnecting && (
