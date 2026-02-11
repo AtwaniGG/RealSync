@@ -12,7 +12,7 @@ import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { toast } from 'sonner';
-import { buildApiUrl } from '../../lib/api';
+import { authFetch } from '../../lib/api';
 
 type MeetingType = 'official' | 'business' | 'friends';
 
@@ -86,7 +86,7 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
   const joinMeeting = useCallback(
     async (sessionId: string, url: string, title: string, type: MeetingType) => {
       try {
-        const joinRes = await fetch(buildApiUrl(`/api/sessions/${sessionId}/join`), {
+        const joinRes = await authFetch(`/api/sessions/${sessionId}/join`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ meetingUrl: url, displayName: 'RealSync Bot' }),
@@ -165,7 +165,7 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
       if (meetingUrl.trim()) body.meetingUrl = meetingUrl.trim();
       if (scheduledAt) body.scheduledAt = new Date(scheduledAt).toISOString();
 
-      const response = await fetch(buildApiUrl('/api/sessions'), {
+      const response = await authFetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -263,7 +263,7 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(buildApiUrl('/api/sessions'));
+        const res = await authFetch('/api/sessions');
         if (!res.ok) throw new Error('Failed to fetch sessions');
         const data = await res.json();
         if (!cancelled) {
