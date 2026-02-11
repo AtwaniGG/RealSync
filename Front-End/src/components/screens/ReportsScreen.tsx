@@ -6,7 +6,7 @@ import { Badge } from '../ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 import { Search, FileText, ArrowLeft, AlertTriangle, Clock, ShieldCheck, ShieldAlert, MessageSquare, Loader2, Download } from 'lucide-react';
 import { useState, useEffect, useCallback } from 'react';
-import { buildApiUrl } from '../../lib/api';
+import { authFetch } from '../../lib/api';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -108,7 +108,7 @@ export function ReportsScreen({ onNavigate, onSignOut, profilePhoto, userName, u
   useEffect(() => {
     const fetchSessions = async () => {
       try {
-        const res = await fetch(buildApiUrl('/api/sessions'));
+        const res = await authFetch('/api/sessions');
         if (res.ok) {
           const data = await res.json();
           const list = Array.isArray(data) ? data : (data.sessions ?? []);
@@ -133,9 +133,9 @@ export function ReportsScreen({ onNavigate, onSignOut, profilePhoto, userName, u
 
     try {
       const [reportRes, alertsRes, transcriptRes] = await Promise.all([
-        fetch(buildApiUrl(`/api/sessions/${sessionId}/report`)),
-        fetch(buildApiUrl(`/api/sessions/${sessionId}/alerts`)),
-        fetch(buildApiUrl(`/api/sessions/${sessionId}/transcript`)),
+        authFetch(`/api/sessions/${sessionId}/report`),
+        authFetch(`/api/sessions/${sessionId}/alerts`),
+        authFetch(`/api/sessions/${sessionId}/transcript`),
       ]);
 
       if (reportRes.ok) {

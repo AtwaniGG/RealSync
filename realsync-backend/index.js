@@ -13,10 +13,12 @@ const { FraudDetector } = require("./lib/fraudDetector");
 const persistence = require("./lib/persistence");
 const { detectMeetingType } = require("./lib/meetingTypeDetector");
 const botManager = require("./bot/botManager");
+const { authenticate, authenticateWsToken, requireSessionOwner } = require("./lib/auth");
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
+app.use(authenticate);
 
 const PORT = process.env.PORT || 4000;
 
@@ -154,10 +156,11 @@ const deriveMetrics = (payload) => {
   };
 };
 
-const createSession = ({ title, meetingType, meetingUrl = null }) => {
+const createSession = ({ title, meetingType, meetingUrl = null, userId = null }) => {
   const id = uuidv4();
   const session = {
     id,
+    userId,
     title: title?.trim() || "Untitled session",
     createdAt: makeIso(),
     endedAt: null,
@@ -191,7 +194,7 @@ const createSession = ({ title, meetingType, meetingUrl = null }) => {
   latestSessionId = id;
 
   // Persist to Supabase (non-blocking)
-  persistence.createSession({ id, title: session.title, meetingType: session.meetingTypeSelected, meetingUrl }).catch(() => {});
+  persistence.createSession({ id, title: session.title, meetingType: session.meetingTypeSelected, userId, meetingUrl }).catch(() => {});
 
   return session;
 };
@@ -214,9 +217,10 @@ const server = http.createServer(app);
 const wssSubscribe = new WebSocket.Server({ server, path: "/ws" });
 const wssIngest = new WebSocket.Server({ server, path: "/ws/ingest" });
 
-wssSubscribe.on("connection", (socket, req) => {
+wssSubscribe.on("connection", async (socket, req) => {
   const url = new URL(req.url, "http://localhost");
   const requestedSessionId = url.searchParams.get("sessionId");
+  const token = url.searchParams.get("token");
   const sessionId = requestedSessionId || latestSessionId;
 
   const session = sessionId ? getSession(sessionId) : null;
@@ -224,6 +228,15 @@ wssSubscribe.on("connection", (socket, req) => {
     // Backwards-compat: if no sessions exist, keep old behavior.
     socket.send(JSON.stringify({ type: "metrics", data: generateSimulatedMetrics() }));
     return;
+  }
+
+  // Verify ownership if session has a userId and a token was provided
+  if (session.userId && token) {
+    const wsUserId = await authenticateWsToken(token);
+    if (wsUserId && wsUserId !== session.userId) {
+      socket.close(4003, "Access denied");
+      return;
+    }
   }
 
   session.subscribers.add(socket);
@@ -537,7 +550,7 @@ app.post("/api/sessions", (req, res) => {
     return res.status(400).json({ error: `meetingType must be one of: ${MEETING_TYPES.join(", ")}` });
   }
 
-  const session = createSession({ title, meetingType, meetingUrl: meetingUrl || null });
+  const session = createSession({ title, meetingType, meetingUrl: meetingUrl || null, userId: req.userId || null });
 
   // Store scheduledAt on session if provided (for reference)
   if (scheduledAt) {
@@ -552,7 +565,15 @@ app.post("/api/sessions", (req, res) => {
 });
 
 app.get("/api/sessions", (req, res) => {
-  const list = Array.from(sessions.values()).map((s) => ({
+  const allSessions = Array.from(sessions.values());
+
+  // Filter to only sessions owned by the authenticated user.
+  // In prototype mode (req.userId === null) return all sessions.
+  const filtered = req.userId
+    ? allSessions.filter((s) => !s.userId || s.userId === req.userId)
+    : allSessions;
+
+  const list = filtered.map((s) => ({
     id: s.id,
     title: s.title,
     createdAt: s.createdAt,
@@ -565,13 +586,13 @@ app.get("/api/sessions", (req, res) => {
   res.json({ sessions: list });
 });
 
-app.get("/api/sessions/:id/metrics", (req, res) => {
+app.get("/api/sessions/:id/metrics", requireSessionOwner(getSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "not found" });
   return res.json(session.metrics);
 });
 
-app.post("/api/sessions/:id/metrics", (req, res) => {
+app.post("/api/sessions/:id/metrics", requireSessionOwner(getSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "not found" });
 
@@ -599,7 +620,7 @@ app.post("/api/sessions/:id/metrics", (req, res) => {
   return res.json({ status: "ok", storedAt: session.metrics.timestamp });
 });
 
-app.post("/api/sessions/:id/stop", async (req, res) => {
+app.post("/api/sessions/:id/stop", requireSessionOwner(getSession), async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "not found" });
 
@@ -624,7 +645,7 @@ app.post("/api/sessions/:id/stop", async (req, res) => {
 /*  Bot management endpoints                                           */
 /* ------------------------------------------------------------------ */
 
-app.post("/api/sessions/:id/join", (req, res) => {
+app.post("/api/sessions/:id/join", requireSessionOwner(getSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
 
@@ -687,7 +708,7 @@ app.post("/api/sessions/:id/join", (req, res) => {
   });
 });
 
-app.post("/api/sessions/:id/leave", (req, res) => {
+app.post("/api/sessions/:id/leave", requireSessionOwner(getSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
 
@@ -712,7 +733,7 @@ app.post("/api/sessions/:id/leave", (req, res) => {
 /*  Data retrieval endpoints                                           */
 /* ------------------------------------------------------------------ */
 
-app.get("/api/sessions/:id/alerts", async (req, res) => {
+app.get("/api/sessions/:id/alerts", requireSessionOwner(getSession), async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
 
@@ -724,7 +745,7 @@ app.get("/api/sessions/:id/alerts", async (req, res) => {
   return res.json({ alerts: session.alerts || [] });
 });
 
-app.get("/api/sessions/:id/transcript", async (req, res) => {
+app.get("/api/sessions/:id/transcript", requireSessionOwner(getSession), async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
 
@@ -736,7 +757,7 @@ app.get("/api/sessions/:id/transcript", async (req, res) => {
   return res.json({ lines: session.transcriptState?.lines || [] });
 });
 
-app.get("/api/sessions/:id/report", async (req, res) => {
+app.get("/api/sessions/:id/report", requireSessionOwner(getSession), async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
 

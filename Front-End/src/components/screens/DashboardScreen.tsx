@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Sidebar } from '../layout/Sidebar';
 import { TopBar } from '../layout/TopBar';
 import { AlertTriangle, AlertCircle, PhoneOff, Loader2 } from 'lucide-react';
-import { buildApiUrl, buildWsUrl } from '../../lib/api';
+import { buildWsUrl, authFetch, getAuthToken } from '../../lib/api';
 import { Button } from '../ui/button';
 import { toast } from 'sonner';
 
@@ -149,7 +149,7 @@ export function DashboardScreen({
 
     const fetchMetrics = async () => {
       try {
-        const response = await fetch(buildApiUrl(metricsPath));
+        const response = await authFetch(metricsPath);
         if (!response.ok) {
           throw new Error('Failed to fetch metrics');
         }
@@ -178,9 +178,12 @@ export function DashboardScreen({
       }
     };
 
-    const connectWebSocket = () => {
+    const connectWebSocket = async () => {
       try {
-        ws = new WebSocket(buildWsUrl(subscribePath));
+        const token = await getAuthToken();
+        const sep = subscribePath.includes('?') ? '&' : '?';
+        const authPath = token ? `${subscribePath}${sep}token=${encodeURIComponent(token)}` : subscribePath;
+        ws = new WebSocket(buildWsUrl(authPath));
       } catch (error) {
         startPolling();
         return;
@@ -282,9 +285,9 @@ export function DashboardScreen({
     setEndingSession(true);
     try {
       // 1. Tell the bot to leave the meeting
-      await fetch(buildApiUrl(`/api/sessions/${sessionId}/leave`), { method: 'POST' }).catch(() => {});
+      await authFetch(`/api/sessions/${sessionId}/leave`, { method: 'POST' }).catch(() => {});
       // 2. Stop the session (generates report)
-      const res = await fetch(buildApiUrl(`/api/sessions/${sessionId}/stop`), { method: 'POST' });
+      const res = await authFetch(`/api/sessions/${sessionId}/stop`, { method: 'POST' });
       if (!res.ok) {
         throw new Error('Failed to stop session');
       }
