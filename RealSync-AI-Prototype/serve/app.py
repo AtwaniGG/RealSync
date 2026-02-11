@@ -37,11 +37,22 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Restrict CORS to the RealSync backend and local development origins.
+# The AI inference service should only accept requests from trusted servers.
+_allowed_origins = [
+    origin for origin in [
+        os.getenv("CORS_ALLOWED_ORIGIN"),       # Production override
+        "http://localhost:4000",                  # Local backend
+        "http://localhost:5173",                  # Local Vite dev server
+        "http://localhost:3000",                  # Alternative dev port
+    ] if origin
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allowed_origins,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
