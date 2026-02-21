@@ -6,8 +6,12 @@ build/
 .venv39/
 __pycache__/
 *.pyc
+*.pyo
 RealSync-AI-Prototype/output/
+RealSync-AI-Prototype/data/
+RealSync-AI-Prototype/input/
 .vscode/
+.claude/
 .env
 .env.*
 *.log
