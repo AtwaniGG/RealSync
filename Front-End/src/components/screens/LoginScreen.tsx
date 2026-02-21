@@ -11,9 +11,10 @@ interface LoginScreenProps {
   onSwitchToSignUp?: () => void;
   oauthError?: string | null;
   onClearOAuthError?: () => void;
+  onDemoLogin?: () => void;
 }
 
-export function LoginScreen({ onSwitchToSignUp, oauthError, onClearOAuthError }: LoginScreenProps) {
+export function LoginScreen({ onSwitchToSignUp, oauthError, onClearOAuthError, onDemoLogin }: LoginScreenProps) {
   const { resolvedTheme } = useTheme();
   const activeLogo = resolvedTheme === 'light' ? logoLight : logo;
   const [showPassword, setShowPassword] = useState(false);
@@ -78,6 +79,15 @@ export function LoginScreen({ onSwitchToSignUp, oauthError, onClearOAuthError }:
     }
 
     setIsSubmitting(true);
+
+    // In demo/prototype mode, skip Supabase and go straight to dashboard
+    if (onDemoLogin) {
+      setTimeout(() => {
+        setIsSubmitting(false);
+        onDemoLogin();
+      }, 800);
+      return;
+    }
 
     const { error } = await supabase.auth.signInWithPassword({
       email: email.trim(),

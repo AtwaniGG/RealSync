@@ -27,8 +27,9 @@ type Profile = {
 export default function App() {
   console.log('App component mounted');
 
-  const [currentScreen, setCurrentScreen] = useState<Screen>('dashboard');
+  const [currentScreen, setCurrentScreen] = useState<Screen>('login');
   const [authView, setAuthView] = useState<'login' | 'signup'>('login');
+  const [demoAuthenticated, setDemoAuthenticated] = useState(false);
   const [profilePhoto, setProfilePhoto] = useState<string | null>(null);
   const [userName, setUserName] = useState<string | undefined>('Demo User');
   const [userEmail, setUserEmail] = useState<string | undefined>('demo@realsync.com');
@@ -175,11 +176,16 @@ export default function App() {
   }, [profile]);
 
   const handleSignOut = async () => {
+    if (prototypeModeEnabled) {
+      setDemoAuthenticated(false);
+      setCurrentScreen('login');
+      return;
+    }
     const { error } = await supabase.auth.signOut();
     if (error) {
       console.error('Failed to sign out', error);
     }
-    setCurrentScreen('dashboard');
+    setCurrentScreen('login');
   };
 
   const navigateTo = (screen: Screen) => {
@@ -208,14 +214,14 @@ export default function App() {
     );
   }
 
-  // In prototype mode, skip authentication
-  if (!prototypeModeEnabled && !session) {
+  // Show login/signup screen when not authenticated
+  if (prototypeModeEnabled ? !demoAuthenticated : !session) {
     if (authView === 'signup') {
       console.log('Showing signup screen');
       return <SignUpScreen onSwitchToLogin={() => setAuthView('login')} />;
     }
     console.log('Showing login screen');
-    return <LoginScreen onSwitchToSignUp={() => setAuthView('signup')} oauthError={oauthError} onClearOAuthError={() => setOauthError(null)} />;
+    return <LoginScreen onSwitchToSignUp={() => setAuthView('signup')} oauthError={oauthError} onClearOAuthError={() => setOauthError(null)} onDemoLogin={prototypeModeEnabled ? () => setDemoAuthenticated(true) : undefined} />;
   }
 
   if (!prototypeModeEnabled && needsOnboarding) {
