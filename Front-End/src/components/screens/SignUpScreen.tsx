@@ -100,9 +100,13 @@ export function SignUpScreen({ onSwitchToLogin }: SignUpScreenProps) {
     if (resendCooldown > 0 || resending) return;
     setResending(true);
 
-    await supabase.auth.resend({ type: 'signup', email: registeredEmail });
+    const { error } = await supabase.auth.resend({ type: 'signup', email: registeredEmail });
 
     setResending(false);
+    if (error) {
+      setFormError(error.message);
+      return;
+    }
     setResendCooldown(60);
 
     // Clear any previous interval

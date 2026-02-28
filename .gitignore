@@ -1,17 +1,48 @@
+# OS
 .DS_Store
+**/.DS_Store
+
+# Dependencies
 node_modules/
+
+# Build output
 dist/
 build/
+Front-End/build/
+Front-End/fonts/
+
+# Python
 .venv/
 .venv39/
 __pycache__/
 *.pyc
 *.pyo
+
+# AI model weights (large binaries)
+*.pth
+*.h5
+*.tar
+*.onnx
+
+# Media (large binaries)
+*.y4m
+*.mp4
+
+# AI prototype data
 RealSync-AI-Prototype/output/
 RealSync-AI-Prototype/data/
 RealSync-AI-Prototype/input/
+
+# Bot screenshots
+realsync-backend/bot/screenshots/
+
+# Editor/IDE
 .vscode/
 .claude/
+
+# Environment
 .env
 .env.*
+
+# Logs
 *.log

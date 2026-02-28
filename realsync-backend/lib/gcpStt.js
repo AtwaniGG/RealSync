@@ -1,3 +1,5 @@
+const log = require("./logger");
+
 const DEFAULT_LANGUAGE = process.env.REALSYNC_STT_LANGUAGE || "en-US";
 const DEFAULT_SAMPLE_RATE = Number(process.env.REALSYNC_STT_SAMPLE_RATE || 16000);
 
@@ -56,9 +58,7 @@ function createStubStream({ onTranscript }) {
 function createGcpStream({ onTranscript, onError, languageCode, sampleRateHertz }) {
   const speech = safeRequire("@google-cloud/speech");
   if (!speech) {
-    console.warn(
-      "GCP Speech client not installed. Run: npm i @google-cloud/speech (backend). Falling back to stub."
-    );
+    log.warn("gcpStt", "GCP Speech client not installed. Run: npm i @google-cloud/speech (backend). Falling back to stub.");
     return createStubStream({ onTranscript });
   }
 
@@ -66,7 +66,7 @@ function createGcpStream({ onTranscript, onError, languageCode, sampleRateHertz 
   try {
     client = new speech.SpeechClient();
   } catch (err) {
-    console.warn(`Failed to init GCP SpeechClient (${err?.message ?? err}). Falling back to stub.`);
+    log.warn("gcpStt", `Failed to init GCP SpeechClient (${err?.message ?? err}). Falling back to stub.`);
     return createStubStream({ onTranscript });
   }
 

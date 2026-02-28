@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+__pycache__
+*.pyc
+training/
+*.tar
+.DS_Store
+.venv
+*.pth

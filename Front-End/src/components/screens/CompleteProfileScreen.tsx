@@ -75,7 +75,6 @@ export function CompleteProfileScreen({ userId, onComplete, initialEmail }: Comp
           .upload(filePath, avatarFile, { upsert: true });
 
         if (uploadError) {
-          console.error('Avatar upload failed:', uploadError);
           // Non-fatal — continue without avatar
         } else {
           const { data: urlData } = supabase.storage
@@ -121,9 +120,8 @@ export function CompleteProfileScreen({ userId, onComplete, initialEmail }: Comp
       } else {
         setFormError('Profile update returned no data.');
       }
-    } catch (err) {
+    } catch {
       setFormError('Unexpected error while updating profile.');
-      console.error('Profile update failed', err);
     } finally {
       setIsSubmitting(false);
     }

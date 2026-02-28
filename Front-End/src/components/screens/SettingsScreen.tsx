@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import { supabase } from '../../lib/supabaseClient';
 import { QRCodeSVG } from 'qrcode.react';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useNotifications, type NotificationSeverity } from '../../contexts/NotificationContext';
 
 type SettingsTab = 'general' | 'privacy' | 'detection' | 'storage' | 'notifications';
 
@@ -113,12 +114,17 @@ function GeneralSettings({ profilePhoto, onSaveProfilePhoto, userName, onSaveUse
         return;
       }
 
+      // TODO: Migrate profile photo storage from base64 in the Supabase profiles
+      // row (avatar_url column) to Supabase Storage. Base64-encoded images bloat
+      // row size and degrade query performance. Use a Storage bucket with a public
+      // URL instead, and store only the URL in the profiles row.
+
       // Create preview URL
       const reader = new FileReader();
       reader.onloadend = () => {
         if (onSaveProfilePhoto) {
           onSaveProfilePhoto(reader.result as string);
-          toast.success('Profile photo updated successfully!');
+          toast.info('Photo selected — click Save Changes to apply.');
         }
       };
       reader.readAsDataURL(file);
@@ -128,43 +134,51 @@ function GeneralSettings({ profilePhoto, onSaveProfilePhoto, userName, onSaveUse
   const handleSaveChanges = async () => {
     setIsSaving(true);
 
-    // Persist to Supabase profiles table FIRST (server-first)
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const { error } = await supabase
-          .from('profiles')
-          .update({
-            username: nameInput.trim() || null,
-            avatar_url: profilePhoto || null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', user.id);
+      // Persist to Supabase profiles table FIRST (server-first)
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const { error } = await supabase
+            .from('profiles')
+            .update({
+              username: nameInput.trim() || null,
+              avatar_url: profilePhoto || null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', user.id);
 
-        if (error) {
-          console.error('Failed to save profile to Supabase:', error);
-          toast.error('Failed to save profile to server.');
-          setIsSaving(false);
+          if (error) {
+            toast.error('Failed to save profile to server.');
+            return;
+          }
+        }
+      } catch {
+        toast.error('Failed to save profile to server.');
+        return;
+      }
+
+      // H17: Persist email change via Supabase Auth (triggers confirmation email)
+      if (emailInput && emailInput.trim() !== userEmail) {
+        const { error: emailErr } = await supabase.auth.updateUser({ email: emailInput.trim() });
+        if (emailErr) {
+          toast.error('Failed to update email: ' + emailErr.message);
           return;
         }
       }
-    } catch (err) {
-      console.error('Unexpected error saving profile:', err);
-      toast.error('Failed to save profile to server.');
+
+      // Update local state only AFTER server write succeeds
+      if (onSaveUserName) {
+        onSaveUserName(nameInput);
+      }
+      if (onSaveUserEmail && emailInput) {
+        onSaveUserEmail(emailInput);
+      }
+
+      toast.success('Settings saved successfully!');
+    } finally {
       setIsSaving(false);
-      return;
     }
-
-    // Update local state only AFTER server write succeeds
-    if (onSaveUserName && nameInput) {
-      onSaveUserName(nameInput);
-    }
-    if (onSaveUserEmail && emailInput) {
-      onSaveUserEmail(emailInput);
-    }
-
-    toast.success('Settings saved successfully!');
-    setIsSaving(false);
   };
 
   return (
@@ -300,6 +314,7 @@ function GeneralSettings({ profilePhoto, onSaveProfilePhoto, userName, onSaveUse
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
+              accept="image/jpeg,image/png,image/gif"
               className="hidden"
             />
           </div>
@@ -329,6 +344,7 @@ function PrivacySettings() {
   const [enrolling, setEnrolling] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [enrollError, setEnrollError] = useState<string | null>(null);
+  const [disabling2FA, setDisabling2FA] = useState(false);
 
   // Check if 2FA is already enabled
   useEffect(() => {
@@ -370,7 +386,6 @@ function PrivacySettings() {
       setFactorId(data.id);
       setShowEnrollModal(true);
     } catch (err: unknown) {
-      console.error('2FA enrollment error:', err);
       toast.error(err instanceof Error ? err.message : 'Failed to start 2FA enrollment');
     } finally {
       setEnrolling(false);
@@ -409,6 +424,9 @@ function PrivacySettings() {
 
   // Disable 2FA (unenroll all factors)
   const handleDisable2FA = async () => {
+    if (disabling2FA) return;
+    if (!window.confirm('Are you sure you want to disable two-factor authentication?')) return;
+    setDisabling2FA(true);
     try {
       const { data } = await supabase.auth.mfa.listFactors();
       const factors = data?.totp ?? [];
@@ -419,6 +437,8 @@ function PrivacySettings() {
       toast.success('Two-factor authentication disabled.');
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Failed to disable 2FA');
+    } finally {
+      setDisabling2FA(false);
     }
   };
 
@@ -481,8 +501,16 @@ function PrivacySettings() {
                     size="sm"
                     className="bg-transparent border-red-500/40 text-red-400 hover:bg-red-500/10 hover:text-red-300"
                     onClick={handleDisable2FA}
+                    disabled={disabling2FA}
                   >
-                    Disable
+                    {disabling2FA ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                        Disabling...
+                      </>
+                    ) : (
+                      'Disable'
+                    )}
                   </Button>
                 </div>
               ) : (
@@ -554,7 +582,21 @@ function MfaEnrollModal({
   onClose: () => void;
 }) {
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
-  const digits = verifyCode.padEnd(6, '').slice(0, 6).split('');
+  // Array-based digit tracking: each position is independent, so clearing a
+  // mid-string digit does not shift remaining digits.
+  const [otpDigits, setOtpDigits] = useState<string[]>(Array(6).fill(''));
+
+  // Sync parent verifyCode string whenever digits change
+  useEffect(() => {
+    setVerifyCode(otpDigits.join(''));
+  }, [otpDigits, setVerifyCode]);
+
+  // Reset internal digits when parent clears verifyCode (e.g. on modal close)
+  useEffect(() => {
+    if (verifyCode === '') {
+      setOtpDigits(Array(6).fill(''));
+    }
+  }, [verifyCode]);
 
   const focusInput = useCallback((idx: number) => {
     inputRefs.current[idx]?.focus();
@@ -565,10 +607,11 @@ function MfaEnrollModal({
 
   const handleDigitChange = (idx: number, value: string) => {
     const digit = value.replace(/\D/g, '').slice(-1); // only last digit typed
-    const arr = verifyCode.padEnd(6, ' ').split('');
-    arr[idx] = digit;
-    const next = arr.join('').replace(/ /g, '');
-    setVerifyCode(next);
+    setOtpDigits((prev) => {
+      const next = [...prev];
+      next[idx] = digit;
+      return next;
+    });
     setEnrollError(null);
     // Auto-advance to next box
     if (digit && idx < 5) focusInput(idx + 1);
@@ -576,14 +619,19 @@ function MfaEnrollModal({
 
   const handleKeyDown = (idx: number, e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Backspace') {
-      const arr = verifyCode.padEnd(6, ' ').split('');
-      if (arr[idx] !== ' ' && arr[idx] !== '') {
-        arr[idx] = ' ';
-        setVerifyCode(arr.join('').replace(/ /g, ''));
+      if (otpDigits[idx] !== '') {
+        setOtpDigits((prev) => {
+          const next = [...prev];
+          next[idx] = '';
+          return next;
+        });
       } else if (idx > 0) {
         focusInput(idx - 1);
-        arr[idx - 1] = ' ';
-        setVerifyCode(arr.join('').replace(/ /g, ''));
+        setOtpDigits((prev) => {
+          const next = [...prev];
+          next[idx - 1] = '';
+          return next;
+        });
       }
       e.preventDefault();
     } else if (e.key === 'ArrowLeft' && idx > 0) {
@@ -596,7 +644,11 @@ function MfaEnrollModal({
   const handlePaste = (e: React.ClipboardEvent) => {
     e.preventDefault();
     const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
-    setVerifyCode(pasted);
+    const newDigits = Array(6).fill('');
+    for (let i = 0; i < pasted.length; i++) {
+      newDigits[i] = pasted[i];
+    }
+    setOtpDigits(newDigits);
     setEnrollError(null);
     focusInput(Math.min(pasted.length, 5));
   };
@@ -644,7 +696,7 @@ function MfaEnrollModal({
                   type="text"
                   inputMode="numeric"
                   maxLength={1}
-                  value={digits[i]?.trim() || ''}
+                  value={otpDigits[i]}
                   onChange={(e) => handleDigitChange(i, e.target.value)}
                   onKeyDown={(e) => handleKeyDown(i, e)}
                   className="flex-shrink-0 w-10 h-12 bg-[#0f0f1e] border border-gray-700 rounded-lg text-white text-center text-xl font-mono focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 outline-none transition-colors"
@@ -658,7 +710,7 @@ function MfaEnrollModal({
                   type="text"
                   inputMode="numeric"
                   maxLength={1}
-                  value={digits[i]?.trim() || ''}
+                  value={otpDigits[i]}
                   onChange={(e) => handleDigitChange(i, e.target.value)}
                   onKeyDown={(e) => handleKeyDown(i, e)}
                   className="flex-shrink-0 w-10 h-12 bg-[#0f0f1e] border border-gray-700 rounded-lg text-white text-center text-xl font-mono focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 outline-none transition-colors"
@@ -830,15 +882,115 @@ function StorageSettings() {
   );
 }
 
+const SEVERITY_OPTIONS: { value: NotificationSeverity; label: string; color: string }[] = [
+  { value: 'critical', label: 'Critical', color: 'text-red-400' },
+  { value: 'high', label: 'High', color: 'text-orange-400' },
+  { value: 'medium', label: 'Medium', color: 'text-yellow-400' },
+  { value: 'low', label: 'Low', color: 'text-blue-400' },
+];
+
+function DesktopNotificationSettings() {
+  const {
+    desktopPermission,
+    desktopEnabled,
+    setDesktopEnabled,
+    desktopSeverityFilter,
+    setDesktopSeverityFilter,
+    requestDesktopPermission,
+  } = useNotifications();
+
+  const permissionLabel =
+    desktopPermission === 'granted' ? 'Granted' :
+    desktopPermission === 'denied' ? 'Blocked by browser' :
+    desktopPermission === 'unsupported' ? 'Not supported' : 'Not yet requested';
+
+  const permissionColor =
+    desktopPermission === 'granted' ? 'text-green-400' :
+    desktopPermission === 'denied' ? 'text-red-400' : 'text-yellow-400';
+
+  const handleToggle = async (checked: boolean) => {
+    if (checked && desktopPermission === 'default') {
+      await requestDesktopPermission();
+    }
+    setDesktopEnabled(checked);
+  };
+
+  const toggleSeverity = (severity: NotificationSeverity) => {
+    const next = desktopSeverityFilter.includes(severity)
+      ? desktopSeverityFilter.filter((s) => s !== severity)
+      : [...desktopSeverityFilter, severity];
+    setDesktopSeverityFilter(next);
+  };
+
+  return (
+    <div className="bg-[#1a1a2e] rounded-xl p-6 border border-gray-800">
+      <h3 className="text-white text-lg mb-4">Desktop Notifications</h3>
+
+      <div className="space-y-4">
+        <div className="flex items-center justify-between py-3 border-b border-gray-800">
+          <div>
+            <p className="text-white mb-1">Enable Desktop Notifications</p>
+            <p className="text-gray-400 text-sm">
+              Show OS-native alerts when the browser tab is in the background
+            </p>
+            <p className={`text-xs mt-1 ${permissionColor}`}>
+              Browser permission: {permissionLabel}
+            </p>
+          </div>
+          <Switch
+            checked={desktopEnabled}
+            onCheckedChange={handleToggle}
+            disabled={desktopPermission === 'denied' || desktopPermission === 'unsupported'}
+          />
+        </div>
+
+        {desktopEnabled && desktopPermission === 'granted' && (
+          <div className="py-3">
+            <p className="text-white mb-2">Alert Severity Filter</p>
+            <p className="text-gray-400 text-sm mb-3">Choose which severity levels trigger desktop notifications</p>
+            <div className="flex flex-wrap gap-2">
+              {SEVERITY_OPTIONS.map((opt) => {
+                const active = desktopSeverityFilter.includes(opt.value);
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => toggleSeverity(opt.value)}
+                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                      active
+                        ? `bg-gray-700 ${opt.color} ring-1 ring-gray-600`
+                        : 'bg-[#2a2a3e] text-gray-500 hover:bg-gray-800'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {desktopPermission === 'denied' && (
+          <p className="text-gray-500 text-xs">
+            Desktop notifications are blocked by your browser. To enable them, click the lock icon in the address bar and allow notifications for this site.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function NotificationSettings() {
   return (
     <div className="max-w-4xl">
       <h2 className="text-white text-2xl mb-6">Notifications</h2>
-      
+
       <div className="space-y-6">
+        {/* Desktop Notifications */}
+        <DesktopNotificationSettings />
+
         <div className="bg-[#1a1a2e] rounded-xl p-6 border border-gray-800">
           <h3 className="text-white text-lg mb-4">Email Notifications</h3>
-          
+
           <div className="space-y-4">
             <div className="flex items-center justify-between py-3 border-b border-gray-800">
               <div>

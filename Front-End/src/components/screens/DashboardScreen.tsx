@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useId, useMemo, useState, useCallback, useRef } from 'react';
 import { Sidebar } from '../layout/Sidebar';
 import { TopBar } from '../layout/TopBar';
+import { ParticipantList } from '../dashboard/ParticipantList';
+import type { ParticipantEntry } from '../dashboard/ParticipantList';
 import { AlertTriangle, AlertCircle, PhoneOff, Loader2 } from 'lucide-react';
-import { buildWsUrl, authFetch, getAuthToken } from '../../lib/api';
+import { authFetch } from '../../lib/api';
+import { useWebSocket, useWsMessages } from '../../contexts/WebSocketContext';
 import { Button } from '../ui/button';
 import { toast } from 'sonner';
 
@@ -31,8 +34,12 @@ type AlertEvent = {
   category: string;
   title: string;
   message: string;
+  recommendation?: string | null;
   source?: { model: string; confidence: number };
   ts: string;
+  sessionId?: string;
+  faceId?: number | null;
+  participantName?: string | null;
 };
 
 type BotStatus = 'idle' | 'joining' | 'connected' | 'degraded' | 'disconnected';
@@ -63,13 +70,16 @@ type Metrics = {
   };
   trustScore: number;
   confidenceLayers: {
-    audio: number;
-    video: number;
-    behavior: number;
+    audio: number | null;
+    video: number | null;
+    behavior: number | null;
   };
+  cameraOff?: boolean;
+  faceCount?: number;
 };
 
-const fallbackMetrics: Metrics = {
+// H16: Function instead of constant so timestamp is always fresh
+const getFallbackMetrics = (): Metrics => ({
   timestamp: new Date().toISOString(),
   source: 'simulated',
   emotion: {
@@ -96,13 +106,14 @@ const fallbackMetrics: Metrics = {
   },
   trustScore: 0.98,
   confidenceLayers: {
-    audio: 0.99,
+    audio: null,
     video: 0.97,
     behavior: 0.82,
   },
-};
+});
 
-const toPercent = (value: number) => (value > 1 ? Math.round(value) : Math.round(value * 100));
+// H15: Clamp to 100 to handle values > 1 correctly
+const toPercent = (value: number) => Math.min(100, Math.round(value * 100));
 
 const getRiskColor = (risk: RiskLevel) => {
   if (risk === 'high') return 'text-red-400';
@@ -122,172 +133,136 @@ export function DashboardScreen({
   meetingTitle,
   meetingType,
 }: DashboardScreenProps) {
+  const gradientId = useId();
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [metricsError, setMetricsError] = useState<string | null>(null);
-  const [wsConnected, setWsConnected] = useState(false);
   const [endingSession, setEndingSession] = useState(false);
+  const endingSessionRef = useRef(false);
 
   // Alert and bot status state
   const [alertEvents, setAlertEvents] = useState<AlertEvent[]>([]);
   const [overlayAlert, setOverlayAlert] = useState<AlertEvent | null>(null);
   const [botStatus, setBotStatus] = useState<BotStatus>('idle');
   const [botStreams, setBotStreams] = useState<BotStreams>({ audio: false, video: false, captions: false });
+  const [participants, setParticipants] = useState<ParticipantEntry[]>([]);
+  const [selectedFaceId, setSelectedFaceId] = useState<number | null>(null);
 
+  const { isConnected: wsConnected } = useWebSocket();
+
+  // Reset per-session UI state when the active session changes.
   useEffect(() => {
-    let isActive = true;
-    let ws: WebSocket | null = null;
-    let pollingInterval: number | null = null;
-
-    // Reset per-session UI state when the active session changes.
     setAlertEvents([]);
     setOverlayAlert(null);
     setBotStatus('idle');
     setBotStreams({ audio: false, video: false, captions: false });
+    setParticipants([]);
+    setSelectedFaceId(null);
+  }, [sessionId]);
+
+  // Handle WS messages via the shared context
+  const handleWsMessage = useCallback((message: Record<string, unknown>) => {
+    if (message?.type === 'metrics' && (message?.data as Record<string, unknown>)?.emotion) {
+      const incoming = message.data as Partial<Metrics>;
+      const fallback = getFallbackMetrics();
+      setMetrics({
+        ...fallback,
+        ...incoming,
+        emotion: { ...fallback.emotion, ...incoming.emotion },
+        identity: { ...fallback.identity, ...incoming.identity },
+        deepfake: { ...fallback.deepfake, ...incoming.deepfake },
+        confidenceLayers: { ...fallback.confidenceLayers, ...incoming.confidenceLayers },
+      } as Metrics);
+      setMetricsError(null);
+      return;
+    }
+
+    if (message?.type === 'transcript') return;
+
+    if (message?.type === 'alert' && typeof message?.title === 'string') {
+      const alertEvent: AlertEvent = {
+        alertId: (message.alertId as string) || '',
+        severity: message.severity as AlertSeverity,
+        category: (message.category as string) || 'unknown',
+        title: message.title as string,
+        message: String(message.message || ''),
+        recommendation: (message.recommendation as string) || null,
+        source: message.source as AlertEvent['source'],
+        ts: typeof message.ts === 'string' ? message.ts : new Date().toISOString(),
+        sessionId: typeof message.sessionId === 'string' ? message.sessionId : sessionId ?? undefined,
+        faceId: typeof message.faceId === 'number' ? message.faceId : null,
+        participantName: typeof message.participantName === 'string' ? message.participantName : null,
+      };
+      setAlertEvents((prev) => [alertEvent, ...prev].slice(0, 100));
+
+      if (alertEvent.severity === 'critical' || alertEvent.severity === 'high') {
+        setOverlayAlert(alertEvent);
+      }
+      return;
+    }
+
+    if (message?.type === 'participants' && Array.isArray(message?.participants)) {
+      const safe = (message.participants as unknown[]).filter(
+        (p): p is ParticipantEntry =>
+          typeof p === 'object' && p !== null &&
+          typeof (p as any).faceId === 'number' &&
+          Number.isFinite((p as any).faceId) &&
+          (p as any).faceId >= 0 && (p as any).faceId < 20 &&
+          (typeof (p as any).name === 'string' || (p as any).name === undefined)
+      );
+      setParticipants(safe);
+      return;
+    }
+
+    if (message?.type === 'sourceStatus') {
+      const newStatus = (message.status as BotStatus) || 'disconnected';
+      setBotStatus(newStatus);
+      setBotStreams((message.streams as BotStreams) || { audio: false, video: false, captions: false });
+      if (newStatus === 'connected') {
+        onBotConnected?.();
+      }
+      return;
+    }
+
+    // Backwards compatibility
+    const payload = (message?.data ?? message) as Record<string, unknown>;
+    if (payload?.emotion) {
+      setMetrics(payload as unknown as Metrics);
+      setMetricsError(null);
+    }
+  }, [onBotConnected, sessionId]);
+
+  useWsMessages(handleWsMessage);
+
+  // HTTP polling fallback when WS is disconnected
+  useEffect(() => {
+    if (wsConnected) {
+      setMetricsError(null);
+      return;
+    }
 
     const metricsPath = sessionId ? `/api/sessions/${sessionId}/metrics` : '/api/metrics';
-    const subscribePath = sessionId ? `/ws?sessionId=${encodeURIComponent(sessionId)}` : '/ws';
 
     const fetchMetrics = async () => {
       try {
         const response = await authFetch(metricsPath);
-        if (!response.ok) {
-          throw new Error('Failed to fetch metrics');
-        }
+        if (!response.ok) throw new Error('Failed to fetch metrics');
         const data: Metrics = await response.json();
-        if (isActive) {
-          setMetrics(data);
-          setMetricsError(null);
-        }
-      } catch (error) {
-        if (isActive) {
-          setMetricsError('Backend offline');
-        }
-      }
-    };
-
-    const startPolling = () => {
-      if (pollingInterval) return;
-      fetchMetrics();
-      pollingInterval = window.setInterval(fetchMetrics, 2000);
-    };
-
-    const stopPolling = () => {
-      if (pollingInterval) {
-        window.clearInterval(pollingInterval);
-        pollingInterval = null;
-      }
-    };
-
-    const connectWebSocket = async () => {
-      try {
-        ws = new WebSocket(buildWsUrl(subscribePath));
-      } catch (error) {
-        startPolling();
-        return;
-      }
-
-      ws.onopen = async () => {
-        if (!isActive) return;
-        // Send auth token as the first message instead of URL query param
-        try {
-          const token = await getAuthToken();
-          if (token && ws?.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'auth', token }));
-          }
-        } catch {
-          // Continue without auth in prototype mode
-        }
-        setWsConnected(true);
+        setMetrics(data);
         setMetricsError(null);
-        stopPolling();
-      };
-
-      ws.onmessage = (event) => {
-        if (!isActive) return;
-        try {
-          const message = JSON.parse(event.data);
-
-          if (message?.type === 'metrics' && message?.data?.emotion) {
-            setMetrics(message.data as Metrics);
-            setMetricsError(null);
-            return;
-          }
-
-          // Transcript events — handled by backend for reports; no dashboard UI needed
-          if (message?.type === 'transcript') {
-            return;
-          }
-
-          // Alert events (deepfake, fraud, identity, altercation)
-          if (message?.type === 'alert' && typeof message?.title === 'string') {
-            const alertEvent: AlertEvent = {
-              alertId: message.alertId || '',
-              severity: message.severity as AlertSeverity,
-              category: message.category || 'unknown',
-              title: message.title,
-              message: String(message.message || ''),
-              source: message.source,
-              ts: typeof message.ts === 'string' ? message.ts : new Date().toISOString(),
-            };
-            setAlertEvents((prev) => [alertEvent, ...prev].slice(0, 100));
-
-            // Show overlay for critical/high alerts
-            if (alertEvent.severity === 'critical' || alertEvent.severity === 'high') {
-              setOverlayAlert(alertEvent);
-            }
-            return;
-          }
-
-          // Source status events (bot connection health)
-          if (message?.type === 'sourceStatus') {
-            const newStatus = (message.status as BotStatus) || 'disconnected';
-            setBotStatus(newStatus);
-            setBotStreams(message.streams || { audio: false, video: false, captions: false });
-            // Dismiss loading screen when bot connects
-            if (newStatus === 'connected') {
-              onBotConnected?.();
-            }
-            return;
-          }
-
-          // Backwards compatibility: older server may send the metrics object directly.
-          const payload = message?.data ?? message;
-          if (payload?.emotion) {
-            setMetrics(payload as Metrics);
-            setMetricsError(null);
-          }
-        } catch (err) {
-          // Ignore malformed payloads
-        }
-      };
-
-      ws.onclose = () => {
-        if (!isActive) return;
-        setWsConnected(false);
+      } catch {
         setMetricsError('Backend offline');
-        startPolling();
-      };
-
-      ws.onerror = () => {
-        if (!isActive) return;
-        setWsConnected(false);
-        setMetricsError('Backend offline');
-      };
+      }
     };
 
-    startPolling();
-    connectWebSocket();
-
-    return () => {
-      isActive = false;
-      stopPolling();
-      ws?.close();
-    };
-  }, [sessionId, onBotConnected]);
+    fetchMetrics();
+    const interval = window.setInterval(fetchMetrics, 2000);
+    return () => window.clearInterval(interval);
+  }, [wsConnected, sessionId]);
 
   /** End session: leave meeting + stop session */
   const handleEndSession = useCallback(async () => {
-    if (!sessionId || endingSession) return;
+    if (!sessionId || endingSessionRef.current) return;
+    endingSessionRef.current = true;
     setEndingSession(true);
     try {
       // 1. Tell the bot to leave the meeting
@@ -304,11 +279,12 @@ export function DashboardScreen({
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to end session');
     } finally {
+      endingSessionRef.current = false;
       setEndingSession(false);
     }
-  }, [sessionId, endingSession, onEndSession]);
+  }, [sessionId, onEndSession]);
 
-  const displayMetrics = metrics ?? fallbackMetrics;
+  const displayMetrics = metrics ?? getFallbackMetrics();
   const trustScorePercent = toPercent(displayMetrics.trustScore);
   const trustDash = (2 * Math.PI * 88 * trustScorePercent) / 100;
   const lastUpdatedLabel = displayMetrics.timestamp
@@ -328,8 +304,13 @@ export function DashboardScreen({
   const alerts = useMemo(() => {
     const items: Array<{ type: 'error' | 'warning' | 'ok'; message: string; time: string }> = [];
 
+    // Filter by selected participant
+    const filteredEvents = selectedFaceId !== null
+      ? alertEvents.filter((a) => a.faceId === selectedFaceId || a.faceId == null)
+      : alertEvents;
+
     // Prioritize real alert events from the alert fusion engine
-    alertEvents.slice(0, 5).forEach((alert) => {
+    filteredEvents.slice(0, 5).forEach((alert) => {
       items.push({
         type: alert.severity === 'critical' || alert.severity === 'high' ? 'error' : 'warning',
         message: `[${alert.category}] ${alert.title}: ${alert.message}`,
@@ -338,7 +319,7 @@ export function DashboardScreen({
     });
 
     // Metric-derived alerts (only if no real alerts yet)
-    if (alertEvents.length === 0) {
+    if (filteredEvents.length === 0) {
       if (displayMetrics.deepfake.riskLevel !== 'low') {
         items.push({
           type: displayMetrics.deepfake.riskLevel === 'high' ? 'error' : 'warning',
@@ -373,12 +354,12 @@ export function DashboardScreen({
     }
 
     return items;
-  }, [displayMetrics, alertEvents]);
+  }, [displayMetrics, alertEvents, selectedFaceId]);
 
   const confidenceScores = useMemo(() => [
-    { label: 'Audio', value: toPercent(displayMetrics.confidenceLayers.audio), color: 'bg-cyan-400' },
-    { label: 'Video', value: toPercent(displayMetrics.confidenceLayers.video), color: 'bg-cyan-400' },
-    { label: 'Behavior', value: toPercent(displayMetrics.confidenceLayers.behavior), color: 'bg-orange-400' },
+    { label: 'Audio', value: toPercent(displayMetrics.confidenceLayers.audio ?? 0), color: displayMetrics.confidenceLayers.audio == null ? 'bg-gray-600' : 'bg-cyan-400' },
+    { label: 'Video', value: displayMetrics.cameraOff ? 0 : toPercent(displayMetrics.confidenceLayers.video ?? 0), color: displayMetrics.cameraOff ? 'bg-gray-600' : 'bg-cyan-400' },
+    { label: 'Behavior', value: toPercent(displayMetrics.confidenceLayers.behavior ?? 0), color: 'bg-orange-400' },
   ], [displayMetrics]);
 
   return (
@@ -402,6 +383,12 @@ export function DashboardScreen({
                   {overlayAlert.title}
                 </p>
                 <p className="text-gray-300 text-sm mt-1">{overlayAlert.message}</p>
+                {overlayAlert.recommendation && (
+                  <div className="mt-3 p-2.5 rounded-lg bg-black/30 border border-cyan-800/50">
+                    <p className="text-cyan-300 text-xs font-semibold mb-1">Recommended Action</p>
+                    <p className="text-cyan-200/90 text-sm">{overlayAlert.recommendation}</p>
+                  </div>
+                )}
                 <p className="text-gray-500 text-xs mt-2">
                   {overlayAlert.category} &middot; {new Date(overlayAlert.ts).toLocaleTimeString()}
                 </p>
@@ -431,7 +418,7 @@ export function DashboardScreen({
               <div className="flex items-center justify-center mb-4">
                 <div className="relative w-48 h-48">
                   {/* Circular progress */}
-                  <svg className="w-48 h-48 transform -rotate-90">
+                  <svg className="w-48 h-48 transform -rotate-90" viewBox="0 0 192 192">
                     <circle
                       cx="96"
                       cy="96"
@@ -440,22 +427,22 @@ export function DashboardScreen({
                       strokeWidth="12"
                       fill="none"
                     />
+                    <defs>
+                      <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="0%">
+                        <stop offset="0%" stopColor="#22d3ee" />
+                        <stop offset="100%" stopColor="#3b82f6" />
+                      </linearGradient>
+                    </defs>
                     <circle
                       cx="96"
                       cy="96"
                       r="88"
-                      stroke="url(#gradient)"
+                      stroke={`url(#${gradientId})`}
                       strokeWidth="12"
                       fill="none"
                       strokeDasharray={`${trustDash} ${2 * Math.PI * 88}`}
                       strokeLinecap="round"
                     />
-                    <defs>
-                      <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                        <stop offset="0%" stopColor="#22d3ee" />
-                        <stop offset="100%" stopColor="#3b82f6" />
-                      </linearGradient>
-                    </defs>
                   </svg>
 
                   <div className="absolute inset-0 flex items-center justify-center">
@@ -521,10 +508,19 @@ export function DashboardScreen({
                     )}
                   </span>
                 </div>
+
+                {displayMetrics.faceCount != null && displayMetrics.faceCount > 0 && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-400">Faces Detected:</span>
+                    <span className={`font-mono ${displayMetrics.faceCount > 1 ? 'text-cyan-400' : 'text-white'}`}>
+                      {displayMetrics.faceCount}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* End Session button */}
-              {sessionId && (botStatus === 'connected' || botStatus === 'joining') && (
+              {sessionId && (
                 <Button
                   className="mt-6 w-full bg-red-600 hover:bg-red-700 text-white"
                   onClick={handleEndSession}
@@ -630,26 +626,48 @@ export function DashboardScreen({
             {/* Deepfake / Visual Manipulation Detection */}
             <div className="bg-[#1a1a2e] rounded-xl p-6 border border-gray-800">
               <h3 className="text-white text-lg mb-4">Visual Manipulation Detection</h3>
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <p className="text-gray-400 text-sm">Authenticity Score</p>
-                  <p className="text-3xl text-white font-mono">{toPercent(displayMetrics.deepfake.authenticityScore)}%</p>
+              {displayMetrics.cameraOff ? (
+                <div className="flex flex-col items-center justify-center py-6 text-center">
+                  <div className="w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center mb-3">
+                    <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636" /></svg>
+                  </div>
+                  <p className="text-gray-300 font-medium">Camera Off</p>
+                  <p className="text-gray-500 text-sm mt-1">Audio-only analysis active</p>
                 </div>
-                <div className="text-right">
-                  <p className="text-gray-400 text-sm">Risk</p>
-                  <p className={`text-2xl ${getRiskColor(displayMetrics.deepfake.riskLevel)}`}>
-                    {displayMetrics.deepfake.riskLevel}
-                  </p>
-                </div>
-              </div>
-              <p className="text-gray-500 text-xs mb-3">{displayMetrics.deepfake.model}</p>
-              <div className="h-2 bg-[#2a2a3e] rounded-full overflow-hidden">
-                <div
-                  className={`h-full ${displayMetrics.deepfake.riskLevel === 'high' ? 'bg-red-400' : displayMetrics.deepfake.riskLevel === 'medium' ? 'bg-yellow-400' : 'bg-cyan-400'}`}
-                  style={{ width: `${toPercent(displayMetrics.deepfake.authenticityScore)}%` }}
-                ></div>
-              </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <p className="text-gray-400 text-sm">Authenticity Score</p>
+                      <p className="text-3xl text-white font-mono">{toPercent(displayMetrics.deepfake.authenticityScore)}%</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-gray-400 text-sm">Risk</p>
+                      <p className={`text-2xl ${getRiskColor(displayMetrics.deepfake.riskLevel)}`}>
+                        {displayMetrics.deepfake.riskLevel}
+                      </p>
+                    </div>
+                  </div>
+                  <p className="text-gray-500 text-xs mb-3">{displayMetrics.deepfake.model}</p>
+                  <div className="h-2 bg-[#2a2a3e] rounded-full overflow-hidden">
+                    <div
+                      className={`h-full ${displayMetrics.deepfake.riskLevel === 'high' ? 'bg-red-400' : displayMetrics.deepfake.riskLevel === 'medium' ? 'bg-yellow-400' : 'bg-cyan-400'}`}
+                      style={{ width: `${toPercent(displayMetrics.deepfake.authenticityScore)}%` }}
+                    ></div>
+                  </div>
+                </>
+              )}
             </div>
+
+            {/* Participant Tracking */}
+            {(participants.length > 0 || (displayMetrics.faceCount != null && displayMetrics.faceCount > 1)) && (
+              <ParticipantList
+                participants={participants}
+                faceCount={displayMetrics.faceCount}
+                selectedFaceId={selectedFaceId}
+                onSelectFaceId={setSelectedFaceId}
+              />
+            )}
 
             {/* Confidence Layer Scores */}
             <div className="col-span-3 bg-[#1a1a2e] rounded-xl p-6 border border-gray-800">

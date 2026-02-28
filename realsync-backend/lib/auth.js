@@ -28,8 +28,8 @@ async function authenticate(req, res, next) {
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
   if (!token) {
-    req.userId = null;
-    return next();
+    // 7.3: `client` is guaranteed truthy here (we returned early above if !client)
+    return res.status(401).json({ error: "Authorization header required" });
   }
 
   try {
@@ -67,13 +67,24 @@ async function authenticateWsToken(token) {
  * identified by `req.params.id`. Must run after `authenticate`.
  *
  * In prototype mode (req.userId === null) ownership checks are skipped.
+ *
+ * @param {Function} getSessionFn - Synchronous in-memory session lookup.
+ * @param {Function} [rehydrateFn] - Optional async fallback that rehydrates
+ *   evicted sessions from the database. When provided, 404 is only returned
+ *   after the rehydration attempt also fails.
  */
-function requireSessionOwner(getSessionFn) {
-  return (req, res, next) => {
+function requireSessionOwner(getSessionFn, rehydrateFn) {
+  return async (req, res, next) => {
     // Prototype mode — skip ownership check
     if (req.userId === null) return next();
 
-    const session = getSessionFn(req.params.id);
+    let session = getSessionFn(req.params.id);
+
+    // If not in memory, try rehydrating from database
+    if (!session && rehydrateFn) {
+      session = await rehydrateFn(req.params.id);
+    }
+
     if (!session) return res.status(404).json({ error: "Session not found" });
 
     if (session.userId !== null && session.userId !== req.userId) {

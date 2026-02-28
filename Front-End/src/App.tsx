@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { Toaster } from 'sonner';
 import { LoginScreen } from './components/screens/LoginScreen';
@@ -11,6 +11,8 @@ import { SettingsScreen } from './components/screens/SettingsScreen';
 import { FAQScreen } from './components/screens/FAQScreen';
 import { supabase } from './lib/supabaseClient';
 import { isBlockedDomain } from './lib/blockedDomains';
+import { WebSocketProvider } from './contexts/WebSocketContext';
+import { NotificationProvider } from './contexts/NotificationContext';
 
 type Screen = 'login' | 'dashboard' | 'sessions' | 'reports' | 'settings' | 'faq';
 type MeetingType = 'official' | 'business' | 'friends';
@@ -40,13 +42,16 @@ export default function App() {
   const [oauthError, setOauthError] = useState<string | null>(null);
   const [botConnecting, setBotConnecting] = useState(false);
   const [connectingTitle, setConnectingTitle] = useState<string>('');
+  const [botProgress, setBotProgress] = useState<'creating' | 'joining' | 'streaming' | null>(null);
+  const botProgressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Final release behavior: real auth by default. If Supabase env vars are missing (common in local dev),
   // fall back to prototype mode so the UI can still render.
-  const prototypeModeEnabled =
+  const prototypeModeEnabled = useMemo(() =>
     import.meta.env.VITE_PROTOTYPE_MODE === '1' ||
     !import.meta.env.VITE_SUPABASE_URL ||
-    !import.meta.env.VITE_SUPABASE_ANON_KEY;
+    !import.meta.env.VITE_SUPABASE_ANON_KEY
+  , []);
 
   useEffect(() => {
     // Skip authentication in prototype mode
@@ -56,13 +61,11 @@ export default function App() {
     }
 
     let isMounted = true;
+    let initialSessionHandled = false;
 
     const initializeSession = async () => {
       try {
-        const { data, error } = await supabase.auth.getSession();
-        if (error) {
-          console.error('Failed to get session', error);
-        }
+        const { data } = await supabase.auth.getSession();
         if (isMounted) {
           setSession(data.session ?? null);
           setLoadingProfile(!!data.session?.user?.id);
@@ -91,6 +94,10 @@ export default function App() {
       }
 
       setSession(nextSession ?? null);
+      if (event === 'INITIAL_SESSION') {
+        if (initialSessionHandled) return;
+        initialSessionHandled = true;
+      }
       if (event === 'SIGNED_IN' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') {
         setLoadingProfile(!!nextSession?.user?.id);
       }
@@ -123,16 +130,13 @@ export default function App() {
     const fetchProfile = async () => {
       setLoadingProfile(true);
       try {
-        const { data, error, status } = await supabase
+        const { data, error } = await supabase
           .from('profiles')
           .select('id, username, full_name, avatar_url, created_at, updated_at')
           .eq('id', userId)
           .single();
 
-        console.debug('Profile fetch response', { data, error, status });
-
         if (error) {
-          console.error('Failed to fetch profile', error);
           if (isMounted) {
             setProfile(null);
           }
@@ -142,8 +146,7 @@ export default function App() {
         if (isMounted) {
           setProfile(data);
         }
-      } catch (err) {
-        console.error('Unexpected profile fetch error', err);
+      } catch {
         if (isMounted) {
           setProfile(null);
         }
@@ -171,11 +174,8 @@ export default function App() {
   }, [profile]);
 
   const handleSignOut = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      console.error('Failed to sign out', error);
-    }
-    setCurrentScreen('dashboard');
+    await supabase.auth.signOut();
+    // M26: Don't set screen here — onAuthStateChange listener handles redirect
   };
 
   const navigateTo = (screen: Screen) => {
@@ -188,11 +188,20 @@ export default function App() {
 
   const needsOnboarding = !!session?.user?.id && profile?.username == null;
 
-  // Auto-dismiss the connecting screen after 15s if bot never reports connected
+  // Auto-dismiss the connecting screen: 30s hard timeout, or 1s after streaming confirmed
   useEffect(() => {
     if (!botConnecting) return;
-    const timer = setTimeout(() => setBotConnecting(false), 15000);
-    return () => clearTimeout(timer);
+    const timer = setTimeout(() => {
+      setBotConnecting(false);
+      setBotProgress(null);
+    }, 30000);
+    return () => {
+      clearTimeout(timer);
+      if (botProgressTimerRef.current) {
+        clearTimeout(botProgressTimerRef.current);
+        botProgressTimerRef.current = null;
+      }
+    };
   }, [botConnecting]);
 
   if (loadingAuth || (session?.user?.id && loadingProfile)) {
@@ -227,22 +236,27 @@ export default function App() {
     setActiveMeetingType(meetingType);
     setConnectingTitle(title);
     setBotConnecting(true);
+    setBotProgress('creating');
     setCurrentScreen('dashboard');
+    // Transition to 'joining' after a brief delay (session creation is near-instant)
+    botProgressTimerRef.current = setTimeout(() => setBotProgress('joining'), 1500);
   };
 
   const handleEndSession = () => {
+    if (botProgressTimerRef.current) { clearTimeout(botProgressTimerRef.current); botProgressTimerRef.current = null; }
     setActiveSessionId(null);
     setActiveMeetingTitle(null);
     setActiveMeetingType(null);
   };
 
   return (
-    <>
+    <WebSocketProvider sessionId={activeSessionId}>
+    <NotificationProvider>
       <Toaster position="top-right" theme="dark" richColors />
 
       {/* Bot Connecting Loading Screen */}
       {botConnecting && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0a0a14]/95 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[999] flex items-center justify-center bg-[#0a0a14]/95 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-6 max-w-md text-center px-6">
             {/* Animated eye logo */}
             <div className="relative">
@@ -268,27 +282,52 @@ export default function App() {
               </p>
             </div>
 
-            {/* Animated progress dots */}
+            {/* Progress steps — styled based on botProgress state */}
             <div className="flex items-center gap-4 text-sm">
+              {/* Step 1: Creating session */}
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-                <span className="text-gray-400">Creating session</span>
+                <span className={`w-2 h-2 rounded-full ${
+                  botProgress === 'creating' ? 'bg-cyan-400 animate-pulse' :
+                  botProgress === 'joining' || botProgress === 'streaming' ? 'bg-cyan-400' :
+                  'bg-gray-600'
+                }`} />
+                <span className={
+                  botProgress === 'creating' ? 'text-cyan-300' :
+                  botProgress === 'joining' || botProgress === 'streaming' ? 'text-gray-400' :
+                  'text-gray-500'
+                }>Creating session</span>
               </div>
-              <div className="w-6 h-px bg-gray-700" />
+              <div className={`w-6 h-px ${botProgress === 'joining' || botProgress === 'streaming' ? 'bg-cyan-400/40' : 'bg-gray-700'}`} />
+              {/* Step 2: Bot joining */}
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-cyan-400/50 animate-pulse [animation-delay:0.5s]" />
-                <span className="text-gray-500">Bot joining</span>
+                <span className={`w-2 h-2 rounded-full ${
+                  botProgress === 'joining' ? 'bg-cyan-400 animate-pulse' :
+                  botProgress === 'streaming' ? 'bg-cyan-400' :
+                  'bg-gray-600'
+                }`} />
+                <span className={
+                  botProgress === 'joining' ? 'text-cyan-300' :
+                  botProgress === 'streaming' ? 'text-gray-400' :
+                  'text-gray-600'
+                }>Bot joining</span>
               </div>
-              <div className="w-6 h-px bg-gray-700" />
+              <div className={`w-6 h-px ${botProgress === 'streaming' ? 'bg-cyan-400/40' : 'bg-gray-700'}`} />
+              {/* Step 3: Streaming */}
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-gray-600" />
-                <span className="text-gray-600">Streaming</span>
+                <span className={`w-2 h-2 rounded-full ${
+                  botProgress === 'streaming' ? 'bg-cyan-400 animate-pulse' :
+                  'bg-gray-600'
+                }`} />
+                <span className={
+                  botProgress === 'streaming' ? 'text-cyan-300' :
+                  'text-gray-600'
+                }>Streaming</span>
               </div>
             </div>
 
             {/* Skip button */}
             <button
-              onClick={() => setBotConnecting(false)}
+              onClick={() => { setBotConnecting(false); setBotProgress(null); }}
               className="mt-4 text-gray-500 text-xs hover:text-gray-300 transition-colors underline underline-offset-2"
             >
               Skip to Dashboard
@@ -302,7 +341,15 @@ export default function App() {
           onNavigate={navigateTo}
           onSignOut={handleSignOut}
           onEndSession={handleEndSession}
-          onBotConnected={() => setBotConnecting(false)}
+          onBotConnected={() => {
+            setBotProgress('streaming');
+            if (botProgressTimerRef.current) { clearTimeout(botProgressTimerRef.current); }
+            botProgressTimerRef.current = setTimeout(() => {
+              setBotConnecting(false);
+              setBotProgress(null);
+              botProgressTimerRef.current = null;
+            }, 1200);
+          }}
           profilePhoto={profilePhoto}
           userName={userName}
           userEmail={userEmail}
@@ -324,6 +371,7 @@ export default function App() {
       {currentScreen === 'reports' && <ReportsScreen onNavigate={navigateTo} onSignOut={handleSignOut} profilePhoto={profilePhoto} userName={userName} userEmail={userEmail} />}
       {currentScreen === 'settings' && <SettingsScreen onNavigate={navigateTo} onSignOut={handleSignOut} profilePhoto={profilePhoto} onSaveProfilePhoto={setProfilePhoto} userName={userName} onSaveUserName={setUserName} userEmail={userEmail} onSaveUserEmail={setUserEmail} />}
       {currentScreen === 'faq' && <FAQScreen onNavigate={navigateTo} onSignOut={handleSignOut} profilePhoto={profilePhoto} userName={userName} userEmail={userEmail} />}
-    </>
+    </NotificationProvider>
+    </WebSocketProvider>
   );
 }

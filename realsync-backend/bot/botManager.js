@@ -12,6 +12,7 @@
  */
 
 const { v4: uuidv4 } = require("uuid");
+const log = require("../lib/logger");
 
 const USE_REAL_BOT = process.env.REALSYNC_BOT_MODE === "real";
 
@@ -19,9 +20,9 @@ let ZoomBotAdapter = null;
 if (USE_REAL_BOT) {
   try {
     ZoomBotAdapter = require("./ZoomBotAdapter").ZoomBotAdapter;
-    console.log("[botManager] Real Puppeteer bot mode enabled");
+    log.info("botManager", "Real Puppeteer bot mode enabled");
   } catch (err) {
-    console.warn(`[botManager] Failed to load ZoomBotAdapter: ${err.message}. Falling back to stub.`);
+    log.warn("botManager", `Failed to load ZoomBotAdapter: ${err.message}. Falling back to stub.`);
   }
 }
 
@@ -81,11 +82,17 @@ const STUB_CAPTIONS = [
   { speaker: "Charlie", text: "I'll run a quick audit on the recent transactions." },
 ];
 
-let stubCaptionIndex = 0;
-function getNextStubCaption() {
-  const caption = STUB_CAPTIONS[stubCaptionIndex % STUB_CAPTIONS.length];
-  stubCaptionIndex++;
-  return caption;
+/**
+ * Create a per-bot caption generator so concurrent stub bots don't
+ * share the same position in the caption array.
+ */
+function createCaptionGenerator() {
+  let index = 0;
+  return function getNextCaption() {
+    const caption = STUB_CAPTIONS[index % STUB_CAPTIONS.length];
+    index++;
+    return caption;
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -94,6 +101,7 @@ function getNextStubCaption() {
 
 function startStubBot({ sessionId, meetingUrl, displayName, onIngestMessage }) {
   const botId = uuidv4();
+  const getNextCaption = createCaptionGenerator();
   const bot = {
     botId,
     sessionId,
@@ -115,7 +123,7 @@ function startStubBot({ sessionId, meetingUrl, displayName, onIngestMessage }) {
   });
 
   // Simulate "joining" delay then start capture
-  setTimeout(() => {
+  bot._joinTimeout = setTimeout(() => {
     if (bot.status === "joining") {
       bot.status = "connected";
 
@@ -140,7 +148,7 @@ function startStubBot({ sessionId, meetingUrl, displayName, onIngestMessage }) {
 
         // Send a caption every 4 seconds (every other tick)
         if (Math.random() > 0.5) {
-          const caption = getNextStubCaption();
+          const caption = getNextCaption();
           onIngestMessage({
             type: "caption",
             text: caption.text,
@@ -161,7 +169,7 @@ function startStubBot({ sessionId, meetingUrl, displayName, onIngestMessage }) {
 
 async function startRealBot({ sessionId, meetingUrl, displayName, onIngestMessage }) {
   if (!ZoomBotAdapter) {
-    console.warn("[botManager] ZoomBotAdapter not available, falling back to stub");
+    log.warn("botManager", "ZoomBotAdapter not available, falling back to stub");
     return startStubBot({ sessionId, meetingUrl, displayName, onIngestMessage });
   }
 
@@ -186,13 +194,16 @@ async function startRealBot({ sessionId, meetingUrl, displayName, onIngestMessag
     .then(() => {
       bot.status = "connected";
     })
-    .catch((err) => {
-      console.error(`[botManager] Real bot failed for ${sessionId}: ${err.message}`);
+    .catch(async (err) => {
+      log.error("botManager", `Real bot failed for ${sessionId}: ${err.message}`);
       bot.status = "disconnected";
-      // Fall back to stub mode for this session
-      console.log("[botManager] Falling back to stub bot...");
-      bots.delete(sessionId);
-      startStubBot({ sessionId, meetingUrl, displayName, onIngestMessage });
+      try { await adapter.leave(); } catch (_) { /* best-effort cleanup */ }
+      // Only fall back if the session bot wasn't already stopped
+      if (bots.has(sessionId)) {
+        bots.delete(sessionId);
+        log.info("botManager", "Falling back to stub bot...");
+        startStubBot({ sessionId, meetingUrl, displayName, onIngestMessage });
+      }
     });
 
   return { botId, status: "joining" };
@@ -204,6 +215,12 @@ async function startRealBot({ sessionId, meetingUrl, displayName, onIngestMessag
 
 /**
  * Start a bot to join a Zoom meeting.
+ *
+ * NOTE: In real mode (USE_REAL_BOT), this returns a Promise because
+ * startRealBot is async. In stub mode, it returns synchronously.
+ * The actual Zoom join is fire-and-forget (the .then/.catch in
+ * startRealBot handles success/failure in the background). Callers
+ * should not rely on awaiting the return value for join completion.
  *
  * @param {object} opts
  * @param {string} opts.sessionId
@@ -250,8 +267,12 @@ function scheduleBot({ sessionId, meetingUrl, scheduledAt, displayName, onIngest
 
   if (delayMs <= 0) {
     // Already past — join now
-    startBot({ sessionId, meetingUrl, displayName, onIngestMessage });
-    return { scheduled: false, delayMs: 0 };
+    try {
+      return startBot({ sessionId, meetingUrl, displayName, onIngestMessage });
+    } catch (err) {
+      log.error("botManager", `scheduleBot immediate start failed for ${sessionId}: ${err.message}`);
+      return { botId: sessionId, status: "error" };
+    }
   }
 
   const timer = setTimeout(() => {
@@ -260,7 +281,7 @@ function scheduleBot({ sessionId, meetingUrl, scheduledAt, displayName, onIngest
   }, delayMs);
 
   scheduledTimers.set(sessionId, timer);
-  console.log(`[botManager] Scheduled bot for session ${sessionId} in ${Math.round(delayMs / 1000)}s`);
+  log.info("botManager", `Scheduled bot for session ${sessionId} in ${Math.round(delayMs / 1000)}s`);
   return { scheduled: true, delayMs };
 }
 
@@ -290,10 +311,16 @@ function stopBot(sessionId, onIngestMessage) {
   const bot = bots.get(sessionId);
   if (!bot) return { ok: false, error: "No bot for session" };
 
+  // Clear stub join timeout if still pending
+  if (bot._joinTimeout) {
+    clearTimeout(bot._joinTimeout);
+    bot._joinTimeout = null;
+  }
+
   // Real bot: call adapter.leave()
   if (bot.adapter) {
     bot.adapter.leave().catch((err) => {
-      console.warn(`[botManager] Error leaving meeting: ${err.message}`);
+      log.warn("botManager", `Error leaving meeting: ${err.message}`);
     });
   }
 
@@ -336,11 +363,11 @@ function getBotStatus(sessionId) {
  * Clean up all bots (e.g. on server shutdown).
  */
 function cleanupAll() {
-  for (const [sessionId] of bots) {
-    stopBot(sessionId);
+  for (const id of [...bots.keys()]) {
+    stopBot(id);
   }
-  for (const [sessionId] of scheduledTimers) {
-    cancelScheduled(sessionId);
+  for (const id of [...scheduledTimers.keys()]) {
+    cancelScheduled(id);
   }
 }
 
