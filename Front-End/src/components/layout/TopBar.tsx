@@ -1,6 +1,7 @@
 import { Avatar, AvatarFallback } from '../ui/avatar';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '../ui/dropdown-menu';
 import { LogOut, User } from 'lucide-react';
+import { NotificationBell } from './NotificationBell';
 
 interface TopBarProps {
   title: string;
@@ -26,6 +27,9 @@ export function TopBar({ title, onSignOut, onNavigate, profilePhoto, userName, u
           <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
           <span className="text-green-400 text-sm">System Online</span>
         </div>
+
+        {/* Notification Bell */}
+        <NotificationBell />
 
         {/* User Profile Dropdown */}
         <DropdownMenu>

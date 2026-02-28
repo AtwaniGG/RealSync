@@ -110,7 +110,66 @@
                 "video": { "type": "number" },
                 "behavior": { "type": "number" }
               }
+            },
+            "temporal": {
+              "type": ["object", "null"],
+              "properties": {
+                "smoothedTrustScore": { "type": "number", "minimum": 0, "maximum": 1 },
+                "trendDirection": { "type": "string", "enum": ["stable", "improving", "declining"] },
+                "volatility": { "type": "number", "minimum": 0, "maximum": 1 },
+                "frameCount": { "type": "integer", "minimum": 0 },
+                "anomalies": { "type": "array" }
+              }
             }
+          }
+        }
+      }
+    },
+    "analyzeAudioRequest": {
+      "type": "object",
+      "required": ["sessionId", "audioB64"],
+      "properties": {
+        "sessionId": { "type": "string" },
+        "audioB64": { "type": "string", "description": "Base64-encoded PCM16 mono 16kHz audio" },
+        "durationMs": { "type": "integer" }
+      }
+    },
+    "analyzeAudioResponse": {
+      "type": "object",
+      "required": ["sessionId", "processedAt", "audio"],
+      "properties": {
+        "sessionId": { "type": "string" },
+        "processedAt": { "type": "string", "format": "date-time" },
+        "audio": {
+          "type": "object",
+          "properties": {
+            "authenticityScore": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+            "riskLevel": { "type": "string", "enum": ["low", "medium", "high", "unknown"] },
+            "model": { "type": "string" }
+          }
+        }
+      }
+    },
+    "analyzeTextRequest": {
+      "type": "object",
+      "required": ["sessionId", "text"],
+      "properties": {
+        "sessionId": { "type": "string" },
+        "text": { "type": "string", "description": "Transcript text (60s window)" }
+      }
+    },
+    "analyzeTextResponse": {
+      "type": "object",
+      "required": ["sessionId", "processedAt", "behavioral"],
+      "properties": {
+        "sessionId": { "type": "string" },
+        "processedAt": { "type": "string", "format": "date-time" },
+        "behavioral": {
+          "type": "object",
+          "properties": {
+            "signals": { "type": "array" },
+            "highestScore": { "type": "number" },
+            "model": { "type": "string" }
           }
         }
       }

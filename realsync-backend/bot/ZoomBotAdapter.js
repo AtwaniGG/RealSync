@@ -41,17 +41,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ── RealSync logo as a data URI (loaded once at startup) ──────────────
-const LOGO_PATH = path.join(__dirname, "../../Front-End/src/assets/4401d6799dc4e6061a79080f8825d69ae920f198.png");
-let LOGO_DATA_URI = "";
-try {
-  const logoBuffer = fs.readFileSync(LOGO_PATH);
-  LOGO_DATA_URI = `data:image/png;base64,${logoBuffer.toString("base64")}`;
-  console.log("[ZoomBot] Loaded RealSync logo for virtual camera avatar.");
-} catch {
-  console.warn("[ZoomBot] Could not load RealSync logo — avatar will render without it.");
-}
-
 class ZoomBotAdapter {
   /**
    * @param {object} opts
@@ -79,8 +68,10 @@ class ZoomBotAdapter {
 
     this.browser = null;
     this.page = null;
-    this._frameInterval = null;
+    this._frameTimer = null;
     this._captionInterval = null;
+    this._participantInterval = null;
+    this._lastParticipantNames = [];
     this._audioCapturing = false;
     this._lastCaptionText = "";
     this._stopped = false;
@@ -106,319 +97,9 @@ class ZoomBotAdapter {
     }
   }
 
-  /**
-   * Inject a virtual camera that renders the animated Baymax bot avatar.
-   * Overrides navigator.mediaDevices.getUserMedia so Zoom sees our avatar
-   * instead of the default green fake-device feed.
-   */
-  async _injectVirtualCamera() {
-    const page = this.page;
-    const logoDataUri = LOGO_DATA_URI;
-
-    await page.evaluateOnNewDocument((logoUri) => {
-      // ── Override enumerateDevices to report a virtual camera ───────
-      const originalEnumerateDevices = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
-
-      navigator.mediaDevices.enumerateDevices = async function () {
-        let devices = [];
-        try {
-          devices = await originalEnumerateDevices();
-        } catch { /* empty */ }
-
-        // Check if we already have a videoinput device listed
-        const hasVideo = devices.some((d) => d.kind === "videoinput");
-        if (!hasVideo) {
-          // Add a fake camera entry so Zoom enables the video UI
-          devices.push({
-            deviceId: "realsync-virtual-cam",
-            groupId: "realsync-group",
-            kind: "videoinput",
-            label: "RealSync Virtual Camera",
-            toJSON() { return { deviceId: this.deviceId, groupId: this.groupId, kind: this.kind, label: this.label }; },
-          });
-        }
-
-        // Also ensure we have an audioinput
-        const hasAudio = devices.some((d) => d.kind === "audioinput");
-        if (!hasAudio) {
-          devices.push({
-            deviceId: "realsync-virtual-mic",
-            groupId: "realsync-group",
-            kind: "audioinput",
-            label: "RealSync Virtual Mic",
-            toJSON() { return { deviceId: this.deviceId, groupId: this.groupId, kind: this.kind, label: this.label }; },
-          });
-        }
-
-        return devices;
-      };
-
-      // ── Override getUserMedia to intercept video requests ──────────
-      const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-
-      navigator.mediaDevices.getUserMedia = async function (constraints) {
-        // Only intercept video requests
-        if (!constraints || !constraints.video) {
-          // For audio-only, return a silent stream instead of failing
-          try {
-            return await originalGetUserMedia(constraints);
-          } catch {
-            // Create a silent audio stream
-            const audioCtx = new AudioContext();
-            const dest = audioCtx.createMediaStreamDestination();
-            const osc = audioCtx.createOscillator();
-            osc.connect(dest);
-            osc.start();
-            dest.stream.getAudioTracks()[0].enabled = false;
-            return dest.stream;
-          }
-        }
-
-        console.log("[RealSync VirtualCam] Injecting animated bot avatar camera feed");
-
-        // ── Create offscreen canvas for the avatar ──────────────────
-        const W = 640;
-        const H = 480;
-        const canvas = document.createElement("canvas");
-        canvas.width = W;
-        canvas.height = H;
-        const ctx = canvas.getContext("2d");
-
-        // Preload logo image
-        let logoImg = null;
-        if (logoUri) {
-          logoImg = new Image();
-          logoImg.src = logoUri;
-          await new Promise((resolve) => {
-            logoImg.onload = resolve;
-            logoImg.onerror = resolve;
-            setTimeout(resolve, 3000);
-          });
-        }
-
-        // ── Animation state ─────────────────────────────────────────
-        const startTime = Date.now();
-
-        function drawFrame() {
-          const t = (Date.now() - startTime) / 1000; // seconds elapsed
-
-          // Static gradient background matching the RealSync logo colors
-          // (deep purple → indigo → blue → cyan → teal)
-          const bgGrad = ctx.createLinearGradient(0, 0, W, H);
-          bgGrad.addColorStop(0, "#1a0a2e");    // deep purple
-          bgGrad.addColorStop(0.25, "#16133a");  // indigo
-          bgGrad.addColorStop(0.5, "#0d1f3c");   // dark blue
-          bgGrad.addColorStop(0.75, "#0a2a3a");  // teal-blue
-          bgGrad.addColorStop(1, "#0c2e2e");     // dark teal
-          ctx.fillStyle = bgGrad;
-          ctx.fillRect(0, 0, W, H);
-
-          // Center the bot
-          const cx = W / 2;
-          const cy = H / 2 - 10;
-
-          // Subtle radial vignette overlay for depth
-          const vignette = ctx.createRadialGradient(cx, cy, 50, cx, cy, Math.max(W, H) * 0.7);
-          vignette.addColorStop(0, "rgba(0, 0, 0, 0)");
-          vignette.addColorStop(1, "rgba(0, 0, 0, 0.35)");
-          ctx.fillStyle = vignette;
-          ctx.fillRect(0, 0, W, H);
-          const scale = 1.8; // Scale up the bot
-
-          ctx.save();
-          ctx.translate(cx, cy);
-          ctx.scale(scale, scale);
-
-          // ── Breathing animation ──────────────────────────────
-          const breathe = 1 + 0.008 * Math.sin(t * Math.PI / 2);
-          ctx.scale(breathe, breathe);
-
-          // ── Glow ring (pulsing) ─────────────────────────────
-          const glowOpacity = 0.35 + 0.3 * (0.5 + 0.5 * Math.sin(t * 2 * Math.PI / 3));
-          ctx.strokeStyle = `rgba(0, 188, 212, ${glowOpacity})`;
-          ctx.lineWidth = 1.2;
-          ctx.beginPath();
-          ctx.ellipse(0, 0, 68, 82, 0, 0, Math.PI * 2);
-          ctx.stroke();
-
-          // ── Arms (behind body) ──────────────────────────────
-          ctx.fillStyle = "#e2e4e9";
-          ctx.strokeStyle = "#d0d4db";
-          ctx.lineWidth = 0.8;
-          // Left arm
-          ctx.beginPath();
-          ctx.ellipse(-70, 8, 12, 24, 0, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.stroke();
-          // Right arm
-          ctx.beginPath();
-          ctx.ellipse(70, 8, 12, 24, 0, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.stroke();
-
-          // ── Head ────────────────────────────────────────────
-          ctx.fillStyle = "#f0f2f5";
-          ctx.strokeStyle = "#d8dce3";
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.ellipse(0, -32, 55, 52, 0, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.stroke();
-
-          // ── Chest / torso ───────────────────────────────────
-          const rx = 55, ry = 32;
-          ctx.beginPath();
-          ctx.moveTo(-rx, -35);
-          ctx.lineTo(-rx, 55 - ry);
-          ctx.arcTo(-rx, 55, -rx + ry, 55, ry);
-          ctx.lineTo(rx - ry, 55);
-          ctx.arcTo(rx, 55, rx, 55 - ry, ry);
-          ctx.lineTo(rx, -35);
-          ctx.closePath();
-          ctx.fill();
-          ctx.stroke();
-
-          // Seam cover
-          ctx.fillStyle = "#f0f2f5";
-          ctx.fillRect(-53, -42, 106, 28);
-
-          // ── Eyes (with blink) ───────────────────────────────
-          // Blink every ~4.5 seconds
-          const blinkCycle = t % 4.5;
-          let eyeScaleY = 1;
-          if (blinkCycle > 4.05 && blinkCycle < 4.275) {
-            // Closing
-            eyeScaleY = Math.max(0.08, 1 - (blinkCycle - 4.05) / 0.1);
-          } else if (blinkCycle > 4.275 && blinkCycle < 4.5) {
-            // Opening
-            eyeScaleY = Math.min(1, 0.08 + (blinkCycle - 4.275) / 0.1);
-          }
-
-          ctx.save();
-          ctx.scale(1, eyeScaleY);
-          const eyeY = -28 / eyeScaleY * (eyeScaleY < 1 ? eyeScaleY : 1);
-
-          // Eye sockets (dark)
-          ctx.fillStyle = "#2a2a3e";
-          ctx.beginPath();
-          ctx.ellipse(-20, eyeY, 16, 14, 0, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.beginPath();
-          ctx.ellipse(20, eyeY, 16, 14, 0, 0, Math.PI * 2);
-          ctx.fill();
-          // Bridge
-          const bridgeH = 8;
-          ctx.fillRect(-20, eyeY - bridgeH / 2, 40, bridgeH);
-
-          // Inner eyes (darker)
-          ctx.fillStyle = "#1a1a2e";
-          ctx.beginPath();
-          ctx.ellipse(-20, eyeY, 12, 10, 0, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.beginPath();
-          ctx.ellipse(20, eyeY, 12, 10, 0, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillRect(-17, eyeY - 5, 34, 10);
-
-          // ── Pupils (wandering) ──────────────────────────────
-          const wanderT = t / 8 * Math.PI * 2; // 8-second loop
-          const px = 3 * Math.sin(wanderT) + 2 * Math.sin(wanderT * 1.7);
-          const py = 1.5 * Math.cos(wanderT * 0.8) + Math.cos(wanderT * 1.3);
-
-          // Left pupil
-          ctx.fillStyle = "#e0e0e0";
-          ctx.beginPath();
-          ctx.arc(-20 + px, eyeY + py, 4.5, 0, Math.PI * 2);
-          ctx.fill();
-
-          // Right pupil (slightly delayed)
-          const px2 = 3 * Math.sin(wanderT - 0.3) + 2 * Math.sin((wanderT - 0.3) * 1.7);
-          const py2 = 1.5 * Math.cos((wanderT - 0.3) * 0.8) + Math.cos((wanderT - 0.3) * 1.3);
-          ctx.beginPath();
-          ctx.arc(20 + px2, eyeY + py2, 4.5, 0, Math.PI * 2);
-          ctx.fill();
-
-          // Pupil highlights
-          ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-          ctx.beginPath();
-          ctx.arc(-18 + px, eyeY + py - 2, 1.6, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.beginPath();
-          ctx.arc(22 + px2, eyeY + py2 - 2, 1.6, 0, Math.PI * 2);
-          ctx.fill();
-
-          ctx.restore(); // end blink scale
-
-          // ── Chest accent line ───────────────────────────────
-          ctx.strokeStyle = "rgba(0, 188, 212, 0.25)";
-          ctx.lineWidth = 0.7;
-          ctx.beginPath();
-          ctx.moveTo(-32, 4);
-          ctx.lineTo(32, 4);
-          ctx.stroke();
-
-          // ── Logo on chest ───────────────────────────────────
-          if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
-            ctx.globalAlpha = 0.85;
-            ctx.drawImage(logoImg, -35, 8, 70, 46);
-            ctx.globalAlpha = 1;
-          }
-
-          // ── Ground shadow ───────────────────────────────────
-          ctx.restore(); // end main transform
-
-          const gradient = ctx.createRadialGradient(cx, cy + 92 * scale, 0, cx, cy + 92 * scale, 45 * scale);
-          gradient.addColorStop(0, "rgba(0, 0, 0, 0.15)");
-          gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
-          ctx.fillStyle = gradient;
-          ctx.beginPath();
-          ctx.ellipse(cx, cy + 92 * scale, 45 * scale, 6 * scale, 0, 0, Math.PI * 2);
-          ctx.fill();
-
-          // ── "RealSync Bot" label at bottom ──────────────────
-          ctx.fillStyle = "rgba(0, 188, 212, 0.6)";
-          ctx.font = "14px Arial, sans-serif";
-          ctx.textAlign = "center";
-          ctx.fillText("RealSync Bot", cx, H - 20);
-        }
-
-        // ── Start animation loop at 24 FPS ──────────────────────────
-        function animate() {
-          drawFrame();
-          requestAnimationFrame(animate);
-        }
-        animate();
-
-        // ── Return canvas stream as camera ──────────────────────────
-        const stream = canvas.captureStream(24);
-
-        // If audio was also requested, get real audio (or silence)
-        if (constraints.audio) {
-          try {
-            const audioStream = await originalGetUserMedia({ audio: constraints.audio });
-            for (const track of audioStream.getAudioTracks()) {
-              stream.addTrack(track);
-            }
-          } catch {
-            // Create silent audio track
-            const audioCtx = new AudioContext();
-            const oscillator = audioCtx.createOscillator();
-            const dest = audioCtx.createMediaStreamDestination();
-            oscillator.connect(dest);
-            oscillator.start();
-            const silentTrack = dest.stream.getAudioTracks()[0];
-            // Mute it
-            silentTrack.enabled = false;
-            stream.addTrack(silentTrack);
-          }
-        }
-
-        return stream;
-      };
-    }, logoDataUri);
-
-    console.log("[ZoomBot] Virtual camera override injected (animated Baymax avatar).");
-  }
+  // 7.4: _injectVirtualCamera removed — it was dead code (never called).
+  // Avatar camera is handled via --use-file-for-fake-video-capture Chromium flag.
+  // The module-level readFileSync for the logo was also removed.
 
   /**
    * Launch browser, navigate to Zoom, and join the meeting.
@@ -514,10 +195,17 @@ class ZoomBotAdapter {
       // Handle the full Zoom join flow
       await this._handleZoomJoinFlow();
 
-      if (this._stopped) return;
+      if (this._stopped) { await this._cleanup(); return; }
 
       // Enable closed captions if available
       await this._enableClosedCaptions();
+
+      if (this._stopped) { await this._cleanup(); return; }
+
+      // Dismiss Zoom popup dialogs that overlay the video
+      await this._dismissZoomPopups();
+
+      if (this._stopped) { await this._cleanup(); return; }
 
       // Notify: connected with streams
       this.onIngestMessage({
@@ -530,6 +218,7 @@ class ZoomBotAdapter {
       // Start capture loops
       this._startFrameCapture();
       this._startCaptionScraping();
+      this._startParticipantScraping();
       await this._startAudioCapture();
 
       console.log("[ZoomBot] Successfully joined meeting and started capture (video + audio + captions).");
@@ -719,8 +408,8 @@ class ZoomBotAdapter {
       // Check if we might be in a waiting room
       if (bodyText.includes("waiting") || bodyText.includes("host")) {
         console.log("[ZoomBot] Looks like we're in a waiting room — waiting for host to admit...");
-        // Wait up to 2 more minutes for host to admit
-        await sleep(120000);
+        // Wait up to 2 more minutes for host to admit (cancellable by leave())
+        await this._interruptibleSleep(120000);
       }
       // Continue anyway — we might be in the meeting with different DOM structure
     }
@@ -1141,9 +830,9 @@ class ZoomBotAdapter {
         if (text === "Join" || text === "Join Meeting") {
           const rect = btn.getBoundingClientRect();
           if (rect.width > 0 && rect.height > 0) {
-            // Force-enable the button
-            btn.classList.remove("disabled");
-            btn.disabled = false;
+            // 7.5: Removed btn.disabled=false — force-enabling a disabled Join
+            // button can break Zoom's flow if it was intentionally disabled
+            // (e.g. waiting for name input or media permissions).
             return {
               x: rect.x + rect.width / 2,
               y: rect.y + rect.height / 2,
@@ -1178,8 +867,7 @@ class ZoomBotAdapter {
           for (const btn of buttons) {
             const text = btn.textContent?.trim() || "";
             if (text === "Join" || text === "Join Meeting") {
-              btn.classList.remove("disabled");
-              btn.disabled = false;
+              // 7.5: Removed btn.disabled=false — see note above
               // Dispatch a full set of mouse events
               const rect = btn.getBoundingClientRect();
               const x = rect.x + rect.width / 2;
@@ -1205,6 +893,104 @@ class ZoomBotAdapter {
       }
     } else {
       console.warn('[ZoomBot] Could not find "Join" button.');
+    }
+  }
+
+  /**
+   * Dismiss Zoom popup dialogs / banners that overlay the video feed.
+   * These popups (e.g. "Floating reactions", "meeting chats") obscure faces
+   * and prevent the AI face detector from working.
+   */
+  async _dismissZoomPopups() {
+    try {
+      console.log("[ZoomBot] Dismissing Zoom popups...");
+
+      // Give popups a moment to appear
+      await sleep(1500);
+
+      // Strategy: click any visible OK/Got it/Close/Dismiss/X buttons in popup dialogs
+      const dismissed = await this.page.evaluate(() => {
+        let count = 0;
+
+        // 1. Click OK / Got it / Dismiss buttons
+        const buttons = Array.from(document.querySelectorAll("button"));
+        for (const btn of buttons) {
+          const text = (btn.textContent || "").trim().toLowerCase();
+          const rect = btn.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue;
+
+          if (
+            text === "ok" ||
+            text === "got it" ||
+            text === "dismiss" ||
+            text === "close" ||
+            text === "later" ||
+            text === "not now" ||
+            text === "maybe later" ||
+            text === "skip"
+          ) {
+            // Don't click Leave/End/Stop buttons
+            const dangerWords = ["leave", "end", "stop video", "mute"];
+            if (dangerWords.some((w) => text.includes(w))) continue;
+
+            btn.click();
+            count++;
+          }
+        }
+
+        // 2. Close notification banners (Low Network Bandwidth, etc.)
+        const closeIcons = document.querySelectorAll(
+          '[aria-label="Close"], [aria-label="close"], .zm-modal-close, .notification-close, .banner-close, .toast-close'
+        );
+        for (const el of closeIcons) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            el.click();
+            count++;
+          }
+        }
+
+        // 3. Remove any remaining overlay/modal elements by class patterns
+        const overlays = document.querySelectorAll(
+          '.zm-modal-mask, .zm-notification, [class*="tippy"], [class*="tooltip"], [class*="popover"], [class*="notification-container"]'
+        );
+        for (const el of overlays) {
+          el.remove();
+          count++;
+        }
+
+        return count;
+      });
+
+      if (dismissed > 0) {
+        console.log(`[ZoomBot] Dismissed ${dismissed} popup(s)/overlay(s).`);
+        await sleep(500);
+
+        // Second pass — some popups appear in sequence
+        const dismissed2 = await this.page.evaluate(() => {
+          let count = 0;
+          const buttons = Array.from(document.querySelectorAll("button"));
+          for (const btn of buttons) {
+            const text = (btn.textContent || "").trim().toLowerCase();
+            const rect = btn.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            if (text === "ok" || text === "got it" || text === "dismiss" || text === "later") {
+              const dangerWords = ["leave", "end", "stop video", "mute"];
+              if (dangerWords.some((w) => text.includes(w))) continue;
+              btn.click();
+              count++;
+            }
+          }
+          return count;
+        });
+        if (dismissed2 > 0) {
+          console.log(`[ZoomBot] Dismissed ${dismissed2} more popup(s) on second pass.`);
+        }
+      } else {
+        console.log("[ZoomBot] No popups found to dismiss.");
+      }
+    } catch (err) {
+      console.warn(`[ZoomBot] Popup dismissal error (non-fatal): ${err.message}`);
     }
   }
 
@@ -1266,11 +1052,38 @@ class ZoomBotAdapter {
 
   /**
    * Capture screenshots at regular intervals and send as frames.
+   * Uses recursive setTimeout instead of setInterval to prevent
+   * overlapping captures when a frame takes longer than the interval.
    */
   _startFrameCapture() {
-    this._frameInterval = setInterval(async () => {
+    let frameCount = 0;
+
+    const captureLoop = async () => {
       if (this._stopped || !this.page) return;
       try {
+        // Every 15 frames (~30s at 2fps), dismiss any new popups/overlays
+        frameCount++;
+        if (frameCount % 15 === 1) {
+          await this.page.evaluate(() => {
+            // Quick popup dismissal — click OK/Got it buttons and remove overlays
+            const buttons = Array.from(document.querySelectorAll("button"));
+            for (const btn of buttons) {
+              const text = (btn.textContent || "").trim().toLowerCase();
+              const rect = btn.getBoundingClientRect();
+              if (rect.width === 0 || rect.height === 0) continue;
+              if (text === "ok" || text === "got it" || text === "dismiss" || text === "later") {
+                if (["leave", "end", "stop video", "mute"].some((w) => text.includes(w))) continue;
+                btn.click();
+              }
+            }
+            // Remove overlay elements
+            const overlays = document.querySelectorAll(
+              '.zm-modal-mask, .zm-notification, [class*="notification-container"]'
+            );
+            for (const el of overlays) el.remove();
+          }).catch(() => {});
+        }
+
         const screenshot = await this.page.screenshot({
           encoding: "base64",
           type: "jpeg",
@@ -1290,7 +1103,14 @@ class ZoomBotAdapter {
           console.warn(`[ZoomBot] Frame capture error: ${err.message}`);
         }
       }
-    }, FRAME_INTERVAL_MS);
+
+      // Schedule next capture only if still active
+      if (!this._stopped) {
+        this._frameTimer = setTimeout(captureLoop, FRAME_INTERVAL_MS);
+      }
+    };
+
+    captureLoop();
   }
 
   /**
@@ -1355,6 +1175,108 @@ class ZoomBotAdapter {
    * - Downsample from the AudioContext sample rate (typically 48kHz) to 16kHz mono
    * - Base64-encode the PCM16 buffer and send via the exposed callback
    */
+
+  /**
+   * Scrape participant names from Zoom's participant panel or video tile labels.
+   * Polls every 10s and sends a "participants" ingest message when names change.
+   */
+  _startParticipantScraping() {
+    const PARTICIPANT_POLL_MS = 10_000;
+
+    // Try to open participant panel once
+    this._openParticipantPanel().catch(() => {});
+
+    this._participantInterval = setInterval(async () => {
+      if (this._stopped || !this.page) return;
+      try {
+        const names = await this.page.evaluate(() => {
+          const panelSelectors = [
+            '[class*="participants-item__display-name"]',
+            '[class*="participant-item__display-name"]',
+            '[class*="participantItem__name"]',
+            '[class*="participant-name"]',
+            '[class*="participants-panel"] li [class*="name"]',
+          ];
+          for (const sel of panelSelectors) {
+            const elements = document.querySelectorAll(sel);
+            if (elements.length > 0) {
+              return Array.from(elements)
+                .map((el) => el.textContent?.trim() || "")
+                .filter((n) => n.length > 0 && n.length <= 100)
+                .slice(0, 20);
+            }
+          }
+          // Fallback: video tile name labels
+          const tileSelectors = [
+            '[class*="video-avatar__display-name"]',
+            '[class*="video-tile"] [class*="name"]',
+            '[class*="attendee-name"]',
+          ];
+          for (const sel of tileSelectors) {
+            const elements = document.querySelectorAll(sel);
+            if (elements.length > 0) {
+              return Array.from(elements)
+                .map((el) => el.textContent?.trim() || "")
+                .filter((n) => n.length > 0 && n.length <= 100)
+                .slice(0, 20);
+            }
+          }
+          return [];
+        });
+
+        if (!names || names.length === 0) return;
+        const namesKey = names.join("|");
+        if (namesKey === this._lastParticipantNames.join("|")) return;
+
+        this._lastParticipantNames = names;
+        this.onIngestMessage({
+          type: "participants",
+          names,
+          ts: new Date().toISOString(),
+        });
+      } catch (err) {
+        if (!this._stopped) {
+          console.warn(`[ZoomBot] Participant scrape error: ${err.message}`);
+        }
+      }
+    }, PARTICIPANT_POLL_MS);
+  }
+
+  /**
+   * Try to open the Zoom participant panel by clicking the Participants toolbar button.
+   */
+  async _openParticipantPanel() {
+    if (!this.page) return;
+    try {
+      const clicked = await this.page.evaluate(() => {
+        const selectors = [
+          'button[aria-label*="participant" i]',
+          'button[aria-label*="Participants" i]',
+          '[data-type="Participants"]',
+        ];
+        for (const sel of selectors) {
+          const btn = document.querySelector(sel);
+          if (btn) {
+            const rect = btn.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) { btn.click(); return true; }
+          }
+        }
+        const buttons = Array.from(document.querySelectorAll("button"));
+        for (const btn of buttons) {
+          const text = (btn.textContent || "").trim().toLowerCase();
+          if (text === "participants") {
+            const rect = btn.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) { btn.click(); return true; }
+          }
+        }
+        return false;
+      });
+      if (clicked) console.log("[ZoomBot] Opened participant panel.");
+    } catch (err) {
+      console.warn(`[ZoomBot] _openParticipantPanel error: ${err.message}`);
+    }
+  }
+
   async _startAudioCapture() {
     if (this._audioCapturing || !this.page) return;
     this._audioCapturing = true;
@@ -1417,11 +1339,16 @@ class ZoomBotAdapter {
             }
             audioBuffer = [];
 
-            // Downsample from source rate to 16kHz
+            // Downsample from source rate to 16kHz using linear interpolation
             const ratio = captureCtx.sampleRate / TARGET_RATE;
-            const downsampled = new Float32Array(Math.floor(fullBuffer.length / ratio));
-            for (let i = 0; i < downsampled.length; i++) {
-              downsampled[i] = fullBuffer[Math.floor(i * ratio)];
+            const outLen = Math.floor(fullBuffer.length / ratio);
+            const downsampled = new Float32Array(outLen);
+            for (let i = 0; i < outLen; i++) {
+              const srcIdx = i * ratio;
+              const lo = Math.floor(srcIdx);
+              const hi = Math.min(lo + 1, fullBuffer.length - 1);
+              const frac = srcIdx - lo;
+              downsampled[i] = fullBuffer[lo] * (1 - frac) + fullBuffer[hi] * frac;
             }
 
             // Convert float32 [-1, 1] → PCM16 (int16)
@@ -1473,10 +1400,12 @@ class ZoomBotAdapter {
         // Zoom may use <audio> or <video> elements for remote audio
         const origPlay = HTMLMediaElement.prototype.play;
         const tappedElements = new WeakSet();
+        const tappedStreams = new WeakSet();
 
         HTMLMediaElement.prototype.play = function () {
-          if (!tappedElements.has(this) && this.srcObject) {
+          if (this.srcObject && !tappedStreams.has(this.srcObject)) {
             tappedElements.add(this);
+            tappedStreams.add(this.srcObject);
             console.log("[RealSync AudioCapture] Tapped media element play()");
             try {
               const captureSource = captureCtx.createMediaStreamSource(this.srcObject);
@@ -1493,8 +1422,9 @@ class ZoomBotAdapter {
         setInterval(() => {
           const mediaEls = document.querySelectorAll("audio, video");
           mediaEls.forEach((el) => {
-            if (!tappedElements.has(el) && el.srcObject) {
+            if (el.srcObject && !tappedStreams.has(el.srcObject)) {
               tappedElements.add(el);
+              tappedStreams.add(el.srcObject);
               console.log("[RealSync AudioCapture] Tapped existing media element");
               try {
                 const captureSource = captureCtx.createMediaStreamSource(el.srcObject);
@@ -1532,19 +1462,43 @@ class ZoomBotAdapter {
   }
 
   /**
-   * Leave the meeting and clean up.
+   * Cancellable sleep — resolves after ms, but can be interrupted by leave().
    */
+  _interruptibleSleep(ms) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      this._sleepTimers = this._sleepTimers || [];
+      this._sleepResolvers = this._sleepResolvers || [];
+      this._sleepTimers.push(timer);
+      this._sleepResolvers.push(resolve);
+    });
+  }
+
   async leave() {
     this._stopped = true;
 
+    // Cancel any interruptible sleeps (e.g. waiting room timeout)
+    if (this._sleepTimers) {
+      this._sleepTimers.forEach(t => clearTimeout(t));
+      this._sleepTimers = [];
+    }
+    if (this._sleepResolvers) {
+      this._sleepResolvers.forEach(r => r());
+      this._sleepResolvers = [];
+    }
+
     // Stop capture loops
-    if (this._frameInterval) {
-      clearInterval(this._frameInterval);
-      this._frameInterval = null;
+    if (this._frameTimer) {
+      clearTimeout(this._frameTimer);
+      this._frameTimer = null;
     }
     if (this._captionInterval) {
       clearInterval(this._captionInterval);
       this._captionInterval = null;
+    }
+    if (this._participantInterval) {
+      clearInterval(this._participantInterval);
+      this._participantInterval = null;
     }
     this._audioCapturing = false;
 
@@ -1594,6 +1548,20 @@ class ZoomBotAdapter {
       streams: { audio: false, video: false, captions: false },
       ts: new Date().toISOString(),
     });
+
+    // Clean up in-page AudioContext and OscillatorNode
+    try {
+      if (this.page && !this.page.isClosed()) {
+        await this.page.evaluate(() => {
+          if (window.__realsyncAudioContext) {
+            window.__realsyncAudioContext.close().catch(() => {});
+          }
+          if (window.__realsyncOscillator) {
+            try { window.__realsyncOscillator.stop(); } catch(e) {}
+          }
+        });
+      }
+    } catch { /* best effort */ }
 
     await this._cleanup();
     console.log("[ZoomBot] Left meeting and cleaned up.");

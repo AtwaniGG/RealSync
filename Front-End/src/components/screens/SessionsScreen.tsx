@@ -71,6 +71,7 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
   const [meetingUrl, setMeetingUrl] = useState('');
   const [scheduledAt, setScheduledAt] = useState('');
   const [creating, setCreating] = useState(false);
+  const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set());
 
   // Scheduled sessions waiting to auto-join
   const [scheduledSessions, setScheduledSessions] = useState<ScheduledSession[]>([]);
@@ -358,7 +359,20 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
                     <TableHeader>
                       <TableRow className="border-gray-800 hover:bg-transparent">
                         <TableHead className="w-12">
-                          <Checkbox className="border-gray-600" />
+                          <Checkbox
+                            className="border-gray-600"
+                            checked={paginatedSessions.length > 0 && paginatedSessions.every((s) => selectedSessions.has(s.id))}
+                            onCheckedChange={(checked) => {
+                              setSelectedSessions((prev) => {
+                                const next = new Set(prev);
+                                paginatedSessions.forEach((s) => {
+                                  if (checked) next.add(s.id);
+                                  else next.delete(s.id);
+                                });
+                                return next;
+                              });
+                            }}
+                          />
                         </TableHead>
                         <TableHead className="text-gray-400">Session ID</TableHead>
                         <TableHead className="text-gray-400">Title</TableHead>
@@ -376,7 +390,18 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
                         return (
                           <TableRow key={session.id} className="border-gray-800 hover:bg-[#2a2a3e]">
                             <TableCell>
-                              <Checkbox className="border-gray-600" />
+                              <Checkbox
+                                className="border-gray-600"
+                                checked={selectedSessions.has(session.id)}
+                                onCheckedChange={(checked) => {
+                                  setSelectedSessions((prev) => {
+                                    const next = new Set(prev);
+                                    if (checked) next.add(session.id);
+                                    else next.delete(session.id);
+                                    return next;
+                                  });
+                                }}
+                              />
                             </TableCell>
                             <TableCell className="text-cyan-400 font-mono text-xs">
                               {session.id.slice(0, 8)}
@@ -437,7 +462,7 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
                 {/* Pagination */}
                 <div className="p-6 border-t border-gray-800 flex justify-between items-center">
                   <p className="text-gray-400 text-sm">
-                    Showing {(currentPage - 1) * PAGE_SIZE + 1}--{Math.min(currentPage * PAGE_SIZE, historySessions.length)} of {historySessions.length} sessions
+                    Showing {Math.min((currentPage - 1) * PAGE_SIZE + 1, historySessions.length)}--{Math.min(currentPage * PAGE_SIZE, historySessions.length)} of {historySessions.length} sessions
                   </p>
                   <div className="flex gap-2">
                     <Button
@@ -450,21 +475,30 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
                       <ChevronLeft className="w-4 h-4" />
                       Prev
                     </Button>
-                    {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => i + 1).map((pg) => (
-                      <Button
-                        key={pg}
-                        variant="outline"
-                        size="sm"
-                        className={
-                          pg === currentPage
-                            ? 'bg-blue-600 border-blue-600 text-white'
-                            : 'bg-transparent border-gray-700 text-gray-400'
-                        }
-                        onClick={() => setCurrentPage(pg)}
-                      >
-                        {pg}
-                      </Button>
-                    ))}
+                    {(() => {
+                      const maxVisible = 5;
+                      let startPage = Math.max(1, currentPage - Math.floor(maxVisible / 2));
+                      let endPage = Math.min(totalPages, startPage + maxVisible - 1);
+                      if (endPage - startPage + 1 < maxVisible) {
+                        startPage = Math.max(1, endPage - maxVisible + 1);
+                      }
+                      const pageNumbers = Array.from({ length: endPage - startPage + 1 }, (_, i) => startPage + i);
+                      return pageNumbers.map((pg) => (
+                        <Button
+                          key={pg}
+                          variant="outline"
+                          size="sm"
+                          className={
+                            pg === currentPage
+                              ? 'bg-blue-600 border-blue-600 text-white'
+                              : 'bg-transparent border-gray-700 text-gray-400'
+                          }
+                          onClick={() => setCurrentPage(pg)}
+                        >
+                          {pg}
+                        </Button>
+                      ));
+                    })()}
                     <Button
                       variant="outline"
                       size="sm"

@@ -2,7 +2,7 @@ import { Sidebar } from '../layout/Sidebar';
 import { TopBar } from '../layout/TopBar';
 import { Input } from '../ui/input';
 import { Search, ChevronDown, ChevronUp, Mail } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 type Screen = 'login' | 'dashboard' | 'sessions' | 'reports' | 'settings' | 'faq';
 
@@ -97,12 +97,9 @@ export function FAQScreen({ onNavigate, onSignOut, profilePhoto, userName, userE
     faq.category.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // Collapse any expanded item when search query changes
-  const [prevQuery, setPrevQuery] = useState('');
-  if (searchQuery !== prevQuery) {
-    setPrevQuery(searchQuery);
-    if (expandedIndex !== null) setExpandedIndex(null);
-  }
+  useEffect(() => {
+    setExpandedIndex(null);
+  }, [searchQuery]);
 
   const categories = Array.from(new Set(faqs.map(faq => faq.category)));
 

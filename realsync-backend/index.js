@@ -1,25 +1,82 @@
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 const http = require("http");
 const WebSocket = require("ws");
 const { v4: uuidv4 } = require("uuid");
+const { execFileSync } = require("child_process");
 require("dotenv").config();
 
 const { createSttStream } = require("./lib/gcpStt");
-const { MEETING_TYPES, scoreMeetingType, generateSuggestions } = require("./lib/suggestions");
-const { analyzeFrame, checkHealth: checkAiHealth } = require("./lib/aiClient");
+const { MEETING_TYPES, generateSuggestions } = require("./lib/suggestions");
+const { analyzeFrame, analyzeAudio, analyzeText, checkHealth: checkAiHealth, clearSession: clearAiSession } = require("./lib/aiClient");
 const { AlertFusionEngine } = require("./lib/alertFusion");
 const { FraudDetector } = require("./lib/fraudDetector");
 const persistence = require("./lib/persistence");
 const { detectMeetingType } = require("./lib/meetingTypeDetector");
 const botManager = require("./bot/botManager");
 const { authenticate, authenticateWsToken, requireSessionOwner } = require("./lib/auth");
+const { getRecommendation } = require("./lib/recommendations");
+const log = require("./lib/logger");
+
+/* ------------------------------------------------------------------ */
+/*  Stale bot cleanup on startup (Bug #10)                             */
+/* ------------------------------------------------------------------ */
+// Kill orphaned Chromium processes from previous runs (handles kill -9 case)
+try {
+  const pgrepOut = execFileSync("pgrep", ["-f", "chromium.*--remote-debugging"], {
+    encoding: "utf-8",
+    timeout: 5000,
+  }).trim();
+  if (pgrepOut) {
+    const pids = pgrepOut.split("\n").filter(Boolean);
+    log.info("startup", `Found ${pids.length} orphaned Chromium process(es) — cleaning up`);
+    for (const pid of pids) {
+      try {
+        process.kill(Number(pid), "SIGTERM");
+      } catch {
+        // Process may have already exited
+      }
+    }
+  }
+} catch {
+  // pgrep not available or no processes found — safe to ignore
+}
 
 const app = express();
+
+// Security headers
+app.use(helmet());
+
+// CORS — supports comma-separated ALLOWED_ORIGIN for multiple origins
+const allowedOrigins = (process.env.ALLOWED_ORIGIN || "http://localhost:3000")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGIN || "http://localhost:3000",
+  origin: (origin, callback) => {
+    // Allow requests with no origin (server-to-server, curl, etc.)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("CORS: origin not allowed"));
+    }
+  },
   credentials: true,
 }));
+
+// Rate limiting on API routes: 100 requests per minute per IP
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later." },
+});
+app.use("/api/", apiLimiter);
+
 app.use(express.json({ limit: "2mb" }));
 app.use(authenticate);
 
@@ -33,9 +90,31 @@ const toFixedNumber = (value, digits = 4) =>
 let broadcastInterval = null;
 
 const sessions = new Map();
-let latestSessionId = null;
+
+/**
+ * Find the most recently created active session belonging to a specific user.
+ * Returns the session object or null if none found.
+ */
+function getLatestSessionForUser(userId) {
+  let latest = null;
+  let latestTime = 0;
+  for (const session of sessions.values()) {
+    if (session.endedAt) continue;
+    if (session.userId !== userId) continue;
+    const created = new Date(session.createdAt).getTime();
+    if (created > latestTime) {
+      latestTime = created;
+      latest = session;
+    }
+  }
+  return latest;
+}
 
 const makeIso = () => new Date().toISOString();
+
+function combineAudioChunks(chunks) {
+  return Buffer.concat(chunks.map(b64 => Buffer.from(b64, "base64"))).toString("base64");
+}
 
 const generateSimulatedMetrics = () => {
   const now = new Date();
@@ -127,24 +206,22 @@ const deriveMetrics = (payload) => {
       return acc;
     }, {});
 
-  const confidenceLayers = payload.confidenceLayers ?? {
-    audio: clamp(0.85 + authenticityScore * 0.1, 0, 1),
-    video: clamp(1 - embeddingShift, 0, 1),
-    behavior: clamp(0.5 + emotionConfidence * 0.5, 0, 1),
+  const rawLayers = payload.confidenceLayers ?? {};
+  const confidenceLayers = {
+    audio: typeof rawLayers.audio === "number" ? rawLayers.audio : null,
+    video: typeof rawLayers.video === "number" ? rawLayers.video : clamp(1 - embeddingShift, 0, 1),
+    behavior: typeof rawLayers.behavior === "number" ? rawLayers.behavior : clamp(0.5 + emotionConfidence * 0.5, 0, 1),
   };
 
-  const trustScore =
-    typeof payload.trustScore === "number"
-      ? payload.trustScore
-      : clamp(
-          (authenticityScore +
-            confidenceLayers.audio +
-            confidenceLayers.video +
-            confidenceLayers.behavior) /
-            4,
-          0,
-          1
-        );
+  let trustScore;
+  if (typeof payload.trustScore === "number") {
+    trustScore = payload.trustScore;
+  } else {
+    // Average only available signals (audio may be null)
+    const signals = [authenticityScore, confidenceLayers.video, confidenceLayers.behavior];
+    if (typeof confidenceLayers.audio === "number") signals.push(confidenceLayers.audio);
+    trustScore = clamp(signals.reduce((s, v) => s + v, 0) / signals.length, 0, 1);
+  }
 
   return {
     ...payload,
@@ -174,6 +251,7 @@ const createSession = ({ title, meetingType, meetingUrl = null, userId = null })
     metrics: generateSimulatedMetrics(),
     source: "simulated",
     subscribers: new Set(),
+    frameSnapshotCounter: 0,
     suggestionState: {
       fired: new Map(),
       lastMeetingTypeNoticeAt: 0,
@@ -183,6 +261,12 @@ const createSession = ({ title, meetingType, meetingUrl = null, userId = null })
       lines: [],
     },
     stt: null,
+    // Audio analysis accumulation state
+    audioAnalysisBuffer: [],
+    audioAnalysisInFlight: false,
+    lastAudioAnalysisAt: 0,
+    audioAuthenticityScore: null,
+    lastBehavioralAnalysisAt: 0,
     // Per-session alert fusion engine and fraud detector
     alertFusion: new AlertFusionEngine(),
     fraudDetector: new FraudDetector(),
@@ -191,18 +275,83 @@ const createSession = ({ title, meetingType, meetingUrl = null, userId = null })
     botStreams: { audio: false, video: false, captions: false },
     // Alert history (in-memory, also persisted to Supabase)
     alerts: [],
+    // Participant registry: faceId → { name, firstSeen }
+    participants: new Map(),
   };
 
   sessions.set(id, session);
-  latestSessionId = id;
 
   // Persist to Supabase (non-blocking)
-  persistence.createSession({ id, title: session.title, meetingType: session.meetingTypeSelected, userId, meetingUrl }).catch((err) => { console.warn(`[persistence] operation failed: ${err?.message ?? err}`); });
+  persistence.createSession({ id, title: session.title, meetingType: session.meetingTypeSelected, userId, meetingUrl }).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
 
   return session;
 };
 
 const getSession = (sessionId) => (sessionId ? sessions.get(sessionId) : null);
+
+/**
+ * Lazy session rehydration (Bug #5): If a session isn't in memory but exists
+ * in Supabase, rebuild it with default runtime state so the client can reconnect.
+ */
+/** Cache of in-flight rehydration promises to prevent TOCTOU races. */
+const _rehydrating = new Map();
+
+async function rehydrateSession(sessionId) {
+  if (!sessionId || sessions.has(sessionId)) return sessions.get(sessionId);
+
+  // Serialize concurrent callers for the same session
+  if (_rehydrating.has(sessionId)) return _rehydrating.get(sessionId);
+
+  const promise = _rehydrateSessionInner(sessionId);
+  _rehydrating.set(sessionId, promise);
+  try {
+    return await promise;
+  } finally {
+    _rehydrating.delete(sessionId);
+  }
+}
+
+async function _rehydrateSessionInner(sessionId) {
+  // Double-check after acquiring the "lock"
+  if (sessions.has(sessionId)) return sessions.get(sessionId);
+
+  const dbSession = await persistence.getSessionById(sessionId);
+  if (!dbSession || dbSession.ended_at) return null; // Don't rehydrate ended sessions
+
+  const session = {
+    id: dbSession.id,
+    userId: dbSession.user_id,
+    title: dbSession.title || "Untitled session",
+    createdAt: dbSession.created_at,
+    endedAt: dbSession.ended_at || null,
+    meetingTypeSelected: dbSession.meeting_type || "business",
+    meetingTypeManual: dbSession.meeting_type || null,
+    meetingTypeAuto: { label: null, confidence: 0, scores: null },
+    meetingUrl: dbSession.meeting_url || null,
+    metrics: generateSimulatedMetrics(),
+    source: "simulated",
+    subscribers: new Set(),
+    frameSnapshotCounter: 0,
+    suggestionState: { fired: new Map(), lastMeetingTypeNoticeAt: 0 },
+    transcriptState: { interim: "", lines: [] },
+    stt: null,
+    audioAnalysisBuffer: [],
+    audioAnalysisInFlight: false,
+    lastAudioAnalysisAt: 0,
+    audioAuthenticityScore: null,
+    lastBehavioralAnalysisAt: 0,
+    alertFusion: new AlertFusionEngine(),
+    fraudDetector: new FraudDetector(),
+    botStatus: dbSession.bot_status || "idle",
+    botStreams: { audio: false, video: false, captions: false },
+    alerts: [],
+    participants: new Map(),
+  };
+
+  sessions.set(sessionId, session);
+  log.info("rehydrate", `Rehydrated session ${sessionId} from Supabase`);
+  return session;
+}
 
 const broadcastToSession = (sessionId, message) => {
   const session = getSession(sessionId);
@@ -217,17 +366,21 @@ const broadcastToSession = (sessionId, message) => {
 };
 
 const server = http.createServer(app);
-const wssSubscribe = new WebSocket.Server({ server, path: "/ws" });
-const wssIngest = new WebSocket.Server({ server, path: "/ws/ingest" });
+const wssSubscribe = new WebSocket.Server({ server, path: "/ws", maxPayload: 256 * 1024 });
+const wssIngest = new WebSocket.Server({ server, path: "/ws/ingest", maxPayload: 2 * 1024 * 1024 });
 
 wssSubscribe.on("connection", async (socket, req) => {
   const url = new URL(req.url, "http://localhost");
-  const requestedSessionId = url.searchParams.get("sessionId");
-  const sessionId = requestedSessionId || latestSessionId;
+  const sessionId = url.searchParams.get("sessionId") || null;
 
-  const session = sessionId ? getSession(sessionId) : null;
+  // Try in-memory first, then lazy rehydrate from Supabase (Bug #5)
+  let session = sessionId ? getSession(sessionId) : null;
+  if (!session && sessionId) {
+    session = await rehydrateSession(sessionId);
+  }
   if (!session) {
-    socket.send(JSON.stringify({ type: "metrics", data: generateSimulatedMetrics() }));
+    socket.send(JSON.stringify({ type: "error", message: "Session not found" }));
+    socket.close(4004, "Session not found");
     return;
   }
 
@@ -240,6 +393,26 @@ wssSubscribe.on("connection", async (socket, req) => {
         data: session.metrics,
       })
     );
+    // Send current bot status so late-connecting clients get the right state
+    if (session.botStatus && session.botStatus !== "idle") {
+      socket.send(
+        JSON.stringify({
+          type: "sourceStatus",
+          sessionId: session.id,
+          status: session.botStatus,
+          streams: session.botStreams || { audio: false, video: false, captions: false },
+          ts: makeIso(),
+        })
+      );
+    }
+    // Push current participant list to newly connected subscriber
+    if (session.participants && session.participants.size > 0) {
+      const participantList = Array.from(session.participants.entries()).map(
+        ([faceId, data]) => ({ faceId, name: data.name, firstSeen: data.firstSeen })
+      );
+      socket.send(JSON.stringify({ type: "participants", sessionId: session.id, participants: participantList, ts: makeIso() }));
+    }
+
     socket.on("close", () => {
       session.subscribers.delete(socket);
     });
@@ -263,7 +436,9 @@ wssSubscribe.on("connection", async (socket, req) => {
       if (msg.type === "auth" && msg.token) {
         const wsUserId = await authenticateWsToken(msg.token);
         if (wsUserId && wsUserId === session.userId) {
-          addSubscriber();
+          if (socket.readyState === WebSocket.OPEN) {
+            addSubscriber();
+          }
           return;
         }
       }
@@ -277,12 +452,18 @@ wssSubscribe.on("connection", async (socket, req) => {
 const handleTranscript = (session, transcript) => {
   const { text, isFinal, confidence, ts, speaker } = transcript;
 
+  if (session.endedAt) return;
+
   if (isFinal) {
     session.transcriptState.lines.push({ text, ts, confidence, speaker });
+    // M17: Cap in-memory transcript lines to prevent unbounded growth
+    if (session.transcriptState.lines.length > 2000) {
+      session.transcriptState.lines = session.transcriptState.lines.slice(-2000);
+    }
     session.transcriptState.interim = "";
 
     // Persist to Supabase (non-blocking)
-    persistence.insertTranscriptLine(session.id, { text, isFinal, confidence, ts, speaker }).catch((err) => { console.warn(`[persistence] operation failed: ${err?.message ?? err}`); });
+    persistence.insertTranscriptLine(session.id, { text, isFinal, confidence, ts, speaker }).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
   } else {
     session.transcriptState.interim = text;
   }
@@ -317,7 +498,7 @@ const handleTranscript = (session, transcript) => {
       ts: suggestion.ts,
     });
     // Persist suggestion (non-blocking)
-    persistence.insertSuggestion(session.id, suggestion).catch((err) => { console.warn(`[persistence] operation failed: ${err?.message ?? err}`); });
+    persistence.insertSuggestion(session.id, suggestion).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
   });
 
   // Fraud/scam detection on final transcript lines
@@ -327,10 +508,51 @@ const handleTranscript = (session, transcript) => {
     const fusedAlerts = session.alertFusion.fuseWithTranscript(session, fraudAlerts);
 
     fusedAlerts.forEach((alert) => {
+      alert.recommendation = getRecommendation(alert.category, alert.severity);
       session.alerts.push(alert);
+      if (session.alerts.length > 500) session.alerts.shift();
       broadcastToSession(session.id, { type: "alert", ...alert });
-      persistence.insertAlert(session.id, alert).catch((err) => { console.warn(`[persistence] operation failed: ${err?.message ?? err}`); });
+      persistence.insertAlert(session.id, alert).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
     });
+  }
+
+  // Behavioral text analysis (DeBERTa) — throttled to every 15 seconds
+  const BEHAVIORAL_INTERVAL_MS = 15000;
+  if (
+    isFinal &&
+    Date.now() - (session.lastBehavioralAnalysisAt || 0) >= BEHAVIORAL_INTERVAL_MS
+  ) {
+    session.lastBehavioralAnalysisAt = Date.now();
+    // Collect 60-second text window from recent transcript lines
+    const windowMs = 60000;
+    const cutoff = Date.now() - windowMs;
+    const recentText = (session.transcriptState?.lines || [])
+      .filter(l => new Date(l.ts).getTime() > cutoff)
+      .map(l => l.text)
+      .join(" ");
+
+    if (recentText.length > 20) {
+      analyzeText({ sessionId: session.id, text: recentText })
+        .then((res) => {
+          if (res?.behavioral?.signals?.length > 0) {
+            const behavioralAlerts = session.fraudDetector.evaluateBehavioral(
+              res.behavioral,
+              session.metrics
+            );
+            const fused = session.alertFusion.fuseWithTranscript(session, behavioralAlerts);
+            for (const ba of fused) {
+              ba.recommendation = getRecommendation(ba.category, ba.severity);
+              session.alerts.push(ba);
+              if (session.alerts.length > 500) session.alerts.shift();
+              broadcastToSession(session.id, { type: "alert", ...ba });
+              persistence.insertAlert(session.id, ba).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
+            }
+          }
+        })
+        .catch((err) => {
+          log.error("server", `behavioral-analysis error: ${err.message}`);
+        });
+    }
   }
 
   // Meeting type mismatch notice (low severity) if auto confidence is strong.
@@ -362,9 +584,8 @@ wssIngest.on("connection", async (socket, req) => {
     return;
   }
 
-  // Verify ownership
-  const ingestUrl = new URL(req.url, "http://localhost");
-  const ingestToken = ingestUrl.searchParams.get("token");
+  // M13: Reuse already-parsed URL instead of parsing again
+  const ingestToken = url.searchParams.get("token");
   if (session.userId) {
     const wsUserId = await authenticateWsToken(ingestToken);
     if (!wsUserId || wsUserId !== session.userId) {
@@ -372,6 +593,16 @@ wssIngest.on("connection", async (socket, req) => {
       return;
     }
   }
+
+  // B4: Reject second ingest socket if one is already OPEN for this session
+  if (session._ingestSocket && session._ingestSocket.readyState === WebSocket.OPEN) {
+    socket.close(4009, "Ingest socket already connected");
+    return;
+  }
+  session._ingestSocket = socket;
+  socket.on("close", () => {
+    if (session._ingestSocket === socket) session._ingestSocket = null;
+  });
 
   socket.on("message", (raw) => {
     let message;
@@ -405,7 +636,7 @@ wssIngest.on("connection", async (socket, req) => {
         session.stt = createSttStream({
           onTranscript: (t) => handleTranscript(session, t),
           onError: (err) => {
-            console.warn(`STT error for session ${session.id}: ${err?.message ?? err}`);
+            log.warn("stt", `STT error for session ${session.id}: ${err?.message ?? err}`);
           },
         });
       }
@@ -415,13 +646,50 @@ wssIngest.on("connection", async (socket, req) => {
 
       const audioBuffer = Buffer.from(dataB64, "base64");
       session.stt.write(audioBuffer);
+
+      // Accumulate audio for AI deepfake analysis (H3: cap buffer at 128 chunks)
+      session.audioAnalysisBuffer.push(dataB64);
+      const MAX_AUDIO_BUFFER = 128;
+      if (session.audioAnalysisBuffer.length > MAX_AUDIO_BUFFER) session.audioAnalysisBuffer.shift();
+      const AUDIO_ANALYSIS_INTERVAL_MS = 4000; // 4 seconds
+      const now = Date.now();
+      if (
+        !session.audioAnalysisInFlight &&
+        session.audioAnalysisBuffer.length >= 8 &&
+        now - session.lastAudioAnalysisAt >= AUDIO_ANALYSIS_INTERVAL_MS
+      ) {
+        session.audioAnalysisInFlight = true;
+        // 7.12: Only splice 8 chunks at a time to prevent silent data loss
+        // when audio accumulates faster than analysis can process it.
+        const chunks = session.audioAnalysisBuffer.splice(0, 8);
+        session.lastAudioAnalysisAt = now;
+        analyzeAudio({ sessionId: session.id, audioB64: combineAudioChunks(chunks), durationMs: 4000 })
+          .then((res) => {
+            session.audioAnalysisInFlight = false;
+            if (res?.audio?.authenticityScore != null) {
+              session.audioAuthenticityScore = res.audio.authenticityScore;
+              if (session.metrics) {
+                session.metrics.confidenceLayers = session.metrics.confidenceLayers || {};
+                session.metrics.confidenceLayers.audio = res.audio.authenticityScore;
+              }
+            }
+          })
+          .catch((err) => {
+            session.audioAnalysisInFlight = false;
+            log.error("server", `audio-analysis error: ${err.message}`);
+          });
+      }
       return;
     }
 
     // Video frame: forward to AI Inference Service for analysis
     if (message.type === "frame") {
+      // Reject oversized frames (>2MB base64)
+      if (typeof message.dataB64 === "string" && message.dataB64.length > 2 * 1024 * 1024) {
+        return;
+      }
       handleFrame(session, message).catch((err) => {
-        console.warn(`Frame analysis error for session ${session.id}: ${err?.message ?? err}`);
+        log.warn("ingest", `Frame analysis error for session ${session.id}: ${err?.message ?? err}`);
       });
       return;
     }
@@ -430,13 +698,16 @@ wssIngest.on("connection", async (socket, req) => {
     if (message.type === "caption") {
       const text = typeof message.text === "string" ? message.text : "";
       if (!text.trim()) return;
+      // Reject oversized captions
+      if (text.length > 1000) return;
+      const speaker = typeof message.speaker === "string" ? message.speaker.trim().slice(0, 100) : "unknown";
 
       handleTranscript(session, {
         text,
         isFinal: true,
         confidence: 0.95, // Captions are high-confidence
         ts: message.ts || makeIso(),
-        speaker: message.speaker || "unknown",
+        speaker,
         source: "caption",
       });
       return;
@@ -454,7 +725,7 @@ wssIngest.on("connection", async (socket, req) => {
         ts: message.ts || makeIso(),
       });
 
-      persistence.updateBotStatus(session.id, session.botStatus).catch((err) => { console.warn(`[persistence] operation failed: ${err?.message ?? err}`); });
+      persistence.updateBotStatus(session.id, session.botStatus).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
       return;
     }
   });
@@ -476,6 +747,8 @@ const frameInFlight = new Map(); // sessionId → boolean
 /** Snapshot counter is now per-session: session.frameSnapshotCounter */
 
 async function handleFrame(session, message) {
+  // H2: Don't process frames after session has ended
+  if (session.endedAt) return;
   // Throttle: skip if a frame is already being analyzed for this session
   if (frameInFlight.get(session.id)) return;
   frameInFlight.set(session.id, true);
@@ -486,32 +759,109 @@ async function handleFrame(session, message) {
       frameB64: message.dataB64,
       capturedAt: message.capturedAt || makeIso(),
     });
-
     if (!result || !result.aggregated) return;
+
+    // Camera-off mode: must be checked BEFORE noFaceDetected, since camera-off
+    // also triggers noFaceDetected but needs special audio-only trust handling.
+    if (result?.aggregated?.cameraOff === true) {
+      session.metrics.cameraOff = true;
+      session.metrics.confidenceLayers = session.metrics.confidenceLayers || {};
+      session.metrics.confidenceLayers.video = null;
+      const audioScore = session.audioAuthenticityScore;
+      const behaviorConf = result.aggregated.confidenceLayers?.behavior || 0.55;
+      if (audioScore != null) {
+        session.metrics.trustScore = parseFloat((0.60 * audioScore + 0.40 * behaviorConf).toFixed(4));
+      }
+      broadcastToSession(session.id, { type: "metrics", data: session.metrics });
+      return;  // Skip visual alert evaluation
+    }
+
+    // When no face is detected, preserve the last good metrics
+    if (result.aggregated.noFaceDetected) return;
 
     // Update session metrics from AI response
     session.metrics = {
       ...result.aggregated,
       timestamp: result.processedAt || makeIso(),
-      source: "external",
+      source: result.source === "mock" ? "simulated" : "external",
     };
-    session.source = "external";
+    session.source = result.source === "mock" ? "simulated" : "external";
 
-    // Broadcast updated metrics to subscribers
-    broadcastToSession(session.id, { type: "metrics", data: session.metrics });
+    // H7: Broadcast moved AFTER trust recomputation (below) so clients get audio-corrected trust
 
-    // Evaluate visual alerts
-    const visualAlerts = session.alertFusion.evaluateVisual(session, result);
+    session.metrics.cameraOff = false;
+
+    // Evaluate visual alerts — primary face (face 0 / aggregated)
+    const primaryName = session.participants?.get(0)?.name || null;
+    const visualAlerts = session.alertFusion.evaluateVisual(session, result, { faceId: 0, participantName: primaryName });
     visualAlerts.forEach((alert) => {
+      alert.recommendation = getRecommendation(alert.category, alert.severity);
       session.alerts.push(alert);
+      if (session.alerts.length > 500) session.alerts.shift();
       broadcastToSession(session.id, { type: "alert", ...alert });
-      persistence.insertAlert(session.id, alert).catch((err) => { console.warn(`[persistence] operation failed: ${err?.message ?? err}`); });
+      persistence.insertAlert(session.id, alert).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
     });
+
+    // Feature #15: Multi-face alerts — iterate non-primary faces
+    const faces = Array.isArray(result.faces) ? result.faces.slice(1, 6) : []; // cap at 6 total
+    for (let i = 0; i < faces.length; i++) {
+      const faceId = i + 1;
+      const face = faces[i];
+      if (!face) continue;
+      // Build a synthetic result object for this face
+      const faceResult = { aggregated: face };
+      const participantName = session.participants?.get(faceId)?.name || null;
+      const faceAlerts = session.alertFusion.evaluateVisual(session, faceResult, { faceId, participantName });
+      faceAlerts.forEach((alert) => {
+        alert.recommendation = getRecommendation(alert.category, alert.severity);
+        session.alerts.push(alert);
+        if (session.alerts.length > 500) session.alerts.shift();
+        broadcastToSession(session.id, { type: "alert", ...alert });
+        persistence.insertAlert(session.id, alert).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
+      });
+    }
+
+    // Add face count to metrics for dashboard display
+    const faceCount = 1 + faces.length; // primary + additional
+    session.metrics.faceCount = faceCount;
+
+    // Temporal anomaly alerts
+    const temporalAlerts = session.alertFusion.evaluateTemporal(session, result);
+    for (const ta of temporalAlerts) {
+      ta.recommendation = getRecommendation(ta.category, ta.severity);
+      session.alerts.push(ta);
+      if (session.alerts.length > 500) session.alerts.shift();
+      broadcastToSession(session.id, { type: "alert", ...ta });
+      persistence.insertAlert(session.id, ta).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
+    }
+
+    // Recompute trust score with audio signal if available
+    if (result?.aggregated?.trustScore != null) {
+      const audioScore = session.audioAuthenticityScore;
+      const behaviorConf = result.aggregated.confidenceLayers?.behavior || 0.55;
+      const identityShift = result.aggregated.identity?.embeddingShift || 0;
+      const identitySignal = 1.0 - identityShift;
+
+      let finalTrust;
+      if (audioScore != null) {
+        // 4-signal weighted: video=0.35, audio=0.25, identity=0.25, behavior=0.15
+        const videoSignal = result.aggregated.deepfake?.authenticityScore ?? 0.5;
+        finalTrust = 0.35 * videoSignal + 0.25 * audioScore + 0.25 * identitySignal + 0.15 * behaviorConf;
+      } else {
+        // 3-signal (no audio): video=0.47, identity=0.33, behavior=0.20
+        const videoSignal = result.aggregated.deepfake?.authenticityScore ?? 0.5;
+        finalTrust = 0.47 * videoSignal + 0.33 * identitySignal + 0.20 * behaviorConf;
+      }
+      session.metrics.trustScore = Math.max(0, Math.min(1, parseFloat(finalTrust.toFixed(4))));
+    }
+
+    // H7: Broadcast metrics AFTER trust recomputation so clients get audio-corrected values
+    broadcastToSession(session.id, { type: "metrics", data: session.metrics });
 
     // Persist metrics snapshot every 5th frame (~10s at 2fps)
     session.frameSnapshotCounter = (session.frameSnapshotCounter || 0) + 1;
     if (session.frameSnapshotCounter % 5 === 0) {
-      persistence.insertMetricsSnapshot(session.id, session.metrics).catch((err) => { console.warn(`[persistence] operation failed: ${err?.message ?? err}`); });
+      persistence.insertMetricsSnapshot(session.id, session.metrics).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
     }
   } finally {
     frameInFlight.set(session.id, false);
@@ -540,17 +890,36 @@ app.get("/", (req, res) => {
   res.json({ status: "RealSync backend running" });
 });
 
-app.get("/api/health", (req, res) => {
-  res.json({ ok: true, timestamp: new Date().toISOString() });
+app.get("/api/health", async (req, res) => {
+  const checks = {};
+
+  // Check AI service reachability
+  try {
+    const aiHealth = await checkAiHealth();
+    checks.ai = aiHealth.ok ? "ok" : `unavailable: ${aiHealth.reason || "unknown"}`;
+  } catch (err) {
+    checks.ai = `error: ${err?.message ?? err}`;
+  }
+
+  // Check Supabase client exists
+  checks.supabase = persistence.isAvailable?.() !== false ? "ok" : "unavailable";
+
+  const allOk = checks.ai === "ok" && checks.supabase === "ok";
+  const status = allOk ? 200 : 503;
+
+  res.status(status).json({
+    ok: allOk,
+    timestamp: new Date().toISOString(),
+    checks,
+  });
 });
 
 app.get("/api/models", (req, res) => {
-  const usingExternal = Boolean(
-    latestSessionId && sessions.get(latestSessionId)?.source === "external"
-  );
+  const latestSession = getLatestSessionForUser(req.userId);
+  const usingExternal = Boolean(latestSession?.source === "external");
   res.json({
     mode: usingExternal ? "external" : "simulated",
-    updatedAt: latestSessionId ? sessions.get(latestSessionId)?.metrics?.timestamp ?? null : null,
+    updatedAt: latestSession?.metrics?.timestamp ?? null,
     models: {
       emotion: {
         name: "FER2013 / AffectNet CNN",
@@ -577,8 +946,22 @@ app.post("/api/sessions", (req, res) => {
   if (!title || typeof title !== "string" || !title.trim()) {
     return res.status(400).json({ error: "title is required" });
   }
+  if (title.length > 500) {
+    return res.status(400).json({ error: "title must be 500 characters or fewer" });
+  }
   if (!meetingType || typeof meetingType !== "string" || !MEETING_TYPES.includes(meetingType)) {
     return res.status(400).json({ error: `meetingType must be one of: ${MEETING_TYPES.join(", ")}` });
+  }
+  // Validate meeting URL is a proper HTTP(S) URL when provided
+  if (meetingUrl) {
+    try {
+      const parsed = new URL(meetingUrl);
+      if (!["http:", "https:"].includes(parsed.protocol)) {
+        return res.status(400).json({ error: "meetingUrl must be an HTTP or HTTPS URL" });
+      }
+    } catch {
+      return res.status(400).json({ error: "meetingUrl is not a valid URL" });
+    }
   }
 
   const session = createSession({ title, meetingType, meetingUrl: meetingUrl || null, userId: req.userId || null });
@@ -595,16 +978,14 @@ app.post("/api/sessions", (req, res) => {
   });
 });
 
-app.get("/api/sessions", (req, res) => {
+app.get("/api/sessions", async (req, res) => {
+  // In-memory sessions (currently active)
   const allSessions = Array.from(sessions.values());
-
-  // Filter to only sessions owned by the authenticated user.
-  // In prototype mode (req.userId === null) return all sessions.
   const filtered = req.userId
     ? allSessions.filter((s) => !s.userId || s.userId === req.userId)
     : allSessions.filter((s) => !s.userId);
 
-  const list = filtered.map((s) => ({
+  const inMemoryList = filtered.map((s) => ({
     id: s.id,
     title: s.title,
     createdAt: s.createdAt,
@@ -614,16 +995,42 @@ app.get("/api/sessions", (req, res) => {
     scheduledAt: s.scheduledAt || null,
     botStatus: s.botStatus || "idle",
   }));
-  res.json({ sessions: list });
+
+  // Bug #5: Also fetch historical sessions from Supabase so sessions
+  // survive backend restarts. Merge, deduplicating by ID.
+  let dbSessions = [];
+  if (req.userId) {
+    dbSessions = await persistence.getUserSessions(req.userId);
+  }
+
+  const inMemoryIds = new Set(inMemoryList.map((s) => s.id));
+  const dbList = dbSessions
+    .filter((s) => !inMemoryIds.has(s.id))
+    .map((s) => ({
+      id: s.id,
+      title: s.title,
+      createdAt: s.created_at,
+      endedAt: s.ended_at || null,
+      meetingType: s.meeting_type,
+      meetingUrl: s.meeting_url || null,
+      scheduledAt: null,
+      botStatus: s.bot_status || "idle",
+    }));
+
+  const merged = [...inMemoryList, ...dbList].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+
+  res.json({ sessions: merged });
 });
 
-app.get("/api/sessions/:id/metrics", requireSessionOwner(getSession), (req, res) => {
+app.get("/api/sessions/:id/metrics", requireSessionOwner(getSession, rehydrateSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "not found" });
   return res.json(session.metrics);
 });
 
-app.post("/api/sessions/:id/metrics", requireSessionOwner(getSession), (req, res) => {
+app.post("/api/sessions/:id/metrics", requireSessionOwner(getSession, rehydrateSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "not found" });
 
@@ -651,23 +1058,29 @@ app.post("/api/sessions/:id/metrics", requireSessionOwner(getSession), (req, res
   return res.json({ status: "ok", storedAt: session.metrics.timestamp });
 });
 
-app.post("/api/sessions/:id/stop", requireSessionOwner(getSession), async (req, res) => {
+app.post("/api/sessions/:id/stop", requireSessionOwner(getSession, rehydrateSession), async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "not found" });
 
   session.endedAt = makeIso();
   session.stt?.end?.();
   session.stt = null;
+  frameInFlight.delete(session.id);
 
   // Stop bot if running
   botManager.stopBot(session.id);
   session.botStatus = "disconnected";
 
+  // Clean up AI service state (identity baselines, temporal buffers) — fire-and-forget
+  clearAiSession(session.id).catch((err) => {
+    log.warn("ai-cleanup", `AI session cleanup failed: ${err?.message ?? err}`);
+  });
+
   // Persist session end
-  persistence.endSession(session.id).catch((err) => { console.warn(`[persistence] operation failed: ${err?.message ?? err}`); });
+  persistence.endSession(session.id).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
 
   // Generate post-meeting report (non-blocking)
-  persistence.generateReport(session.id).catch((err) => { console.warn(`[persistence] operation failed: ${err?.message ?? err}`); });
+  persistence.generateReport(session.id).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
 
   return res.json({ ok: true, endedAt: session.endedAt });
 });
@@ -676,15 +1089,18 @@ app.post("/api/sessions/:id/stop", requireSessionOwner(getSession), async (req, 
 function processIngestMessage(session, message) {
   if (message.type === "frame") {
     handleFrame(session, message).catch((err) => {
-      console.warn(`Frame analysis error for session ${session.id}: ${err?.message ?? err}`);
+      log.warn("ingest", `Frame analysis error for session ${session.id}: ${err?.message ?? err}`);
     });
   } else if (message.type === "caption") {
+    const text = typeof message.text === "string" ? message.text : "";
+    if (!text.trim() || text.length > 1000) return;
+    const speaker = typeof message.speaker === "string" ? message.speaker.trim().slice(0, 100) : "unknown";
     handleTranscript(session, {
-      text: message.text,
+      text,
       isFinal: true,
       confidence: 0.95,
       ts: message.ts || makeIso(),
-      speaker: message.speaker || "unknown",
+      speaker,
       source: "caption",
     });
   } else if (message.type === "source_status") {
@@ -697,20 +1113,73 @@ function processIngestMessage(session, message) {
       ts: message.ts || makeIso(),
     });
     persistence.updateBotStatus(session.id, session.botStatus).catch((err) => {
-      console.warn(`[persistence] updateBotStatus failed: ${err?.message ?? err}`);
+      log.warn("persistence", `updateBotStatus failed: ${err?.message ?? err}`);
     });
+  } else if (message.type === "participants") {
+    // Feature #16: Participant names from bot's panel scraper
+    const rawNames = message.names;
+    if (!Array.isArray(rawNames)) return;
+    const names = rawNames
+      .slice(0, 20)
+      .filter((n) => typeof n === "string" && n.trim().length > 0)
+      .map((n) => n.trim().slice(0, 100));
+    if (names.length === 0) return;
+
+    const now = makeIso();
+    names.forEach((name, index) => {
+      const existing = session.participants.get(index);
+      session.participants.set(index, { name, firstSeen: existing?.firstSeen || now });
+    });
+
+    const participantList = Array.from(session.participants.entries()).map(
+      ([faceId, data]) => ({ faceId, name: data.name, firstSeen: data.firstSeen })
+    );
+    broadcastToSession(session.id, { type: "participants", participants: participantList, ts: now });
   } else if (message.type === "audio_pcm") {
     if (!session.stt) {
       session.stt = createSttStream({
         onTranscript: (t) => handleTranscript(session, t),
         onError: (err) => {
-          console.warn(`STT error for session ${session.id}: ${err?.message ?? err}`);
+          log.warn("stt", `STT error for session ${session.id}: ${err?.message ?? err}`);
         },
       });
     }
     const dataB64 = message.dataB64;
     if (typeof dataB64 === "string" && dataB64) {
       session.stt.write(Buffer.from(dataB64, "base64"));
+
+      // Accumulate audio for AI deepfake analysis (mirrors WS ingest handler)
+      session.audioAnalysisBuffer.push(dataB64);
+      const MAX_AUDIO_BUFFER = 128;
+      if (session.audioAnalysisBuffer.length > MAX_AUDIO_BUFFER) session.audioAnalysisBuffer.shift();
+      const AUDIO_ANALYSIS_INTERVAL_MS = 4000;
+      const now = Date.now();
+      if (
+        !session.audioAnalysisInFlight &&
+        session.audioAnalysisBuffer.length >= 8 &&
+        now - session.lastAudioAnalysisAt >= AUDIO_ANALYSIS_INTERVAL_MS
+      ) {
+        session.audioAnalysisInFlight = true;
+        // 7.12: Only splice 8 chunks at a time to prevent silent data loss
+        // when audio accumulates faster than analysis can process it.
+        const chunks = session.audioAnalysisBuffer.splice(0, 8);
+        session.lastAudioAnalysisAt = now;
+        analyzeAudio({ sessionId: session.id, audioB64: combineAudioChunks(chunks), durationMs: 4000 })
+          .then((res) => {
+            session.audioAnalysisInFlight = false;
+            if (res?.audio?.authenticityScore != null) {
+              session.audioAuthenticityScore = res.audio.authenticityScore;
+              if (session.metrics) {
+                session.metrics.confidenceLayers = session.metrics.confidenceLayers || {};
+                session.metrics.confidenceLayers.audio = res.audio.authenticityScore;
+              }
+            }
+          })
+          .catch((err) => {
+            session.audioAnalysisInFlight = false;
+            log.warn("audio-analysis", `Audio analysis error for session ${session.id}: ${err?.message ?? err}`);
+          });
+      }
     }
   }
 }
@@ -719,16 +1188,26 @@ function processIngestMessage(session, message) {
 /*  Bot management endpoints                                           */
 /* ------------------------------------------------------------------ */
 
-app.post("/api/sessions/:id/join", requireSessionOwner(getSession), (req, res) => {
+app.post("/api/sessions/:id/join", requireSessionOwner(getSession, rehydrateSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
 
-  const { meetingUrl, displayName } = req.body ?? {};
+  const { meetingUrl } = req.body ?? {};
+  const displayName = typeof req.body.displayName === "string" ? req.body.displayName.trim().slice(0, 100) : "RealSync Bot";
   if (!meetingUrl || typeof meetingUrl !== "string") {
     return res.status(400).json({ error: "meetingUrl is required" });
   }
 
+  // H4: Validate URL — only allow https://*.zoom.us
+  try {
+    const u = new URL(meetingUrl);
+    if (u.protocol !== "https:" || !u.hostname.endsWith(".zoom.us")) throw 0;
+  } catch {
+    return res.status(400).json({ error: "meetingUrl must be https://*.zoom.us" });
+  }
+
   session.meetingUrl = meetingUrl;
+  session.botStatus = "joining";
 
   const result = botManager.startBot({
     sessionId: session.id,
@@ -739,6 +1218,14 @@ app.post("/api/sessions/:id/join", requireSessionOwner(getSession), (req, res) =
     },
   });
 
+  // Broadcast joining status to any connected subscribers
+  broadcastToSession(session.id, {
+    type: "sourceStatus",
+    status: "joining",
+    streams: { audio: false, video: false, captions: false },
+    ts: makeIso(),
+  });
+
   return res.json({
     status: result.status,
     botId: result.botId,
@@ -746,7 +1233,7 @@ app.post("/api/sessions/:id/join", requireSessionOwner(getSession), (req, res) =
   });
 });
 
-app.post("/api/sessions/:id/leave", requireSessionOwner(getSession), (req, res) => {
+app.post("/api/sessions/:id/leave", requireSessionOwner(getSession, rehydrateSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
 
@@ -771,7 +1258,7 @@ app.post("/api/sessions/:id/leave", requireSessionOwner(getSession), (req, res) 
 /*  Data retrieval endpoints                                           */
 /* ------------------------------------------------------------------ */
 
-app.get("/api/sessions/:id/alerts", requireSessionOwner(getSession), async (req, res) => {
+app.get("/api/sessions/:id/alerts", requireSessionOwner(getSession, rehydrateSession), async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
 
@@ -783,7 +1270,7 @@ app.get("/api/sessions/:id/alerts", requireSessionOwner(getSession), async (req,
   return res.json({ alerts: session.alerts || [] });
 });
 
-app.get("/api/sessions/:id/transcript", requireSessionOwner(getSession), async (req, res) => {
+app.get("/api/sessions/:id/transcript", requireSessionOwner(getSession, rehydrateSession), async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
 
@@ -795,7 +1282,7 @@ app.get("/api/sessions/:id/transcript", requireSessionOwner(getSession), async (
   return res.json({ lines: session.transcriptState?.lines || [] });
 });
 
-app.get("/api/sessions/:id/report", requireSessionOwner(getSession), async (req, res) => {
+app.get("/api/sessions/:id/report", requireSessionOwner(getSession, rehydrateSession), async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
 
@@ -831,14 +1318,77 @@ app.get("/api/sessions/:id/report", requireSessionOwner(getSession), async (req,
   return res.json(report);
 });
 
+/* ------------------------------------------------------------------ */
+/*  Notification endpoints                                             */
+/* ------------------------------------------------------------------ */
+
+app.get("/api/notifications", async (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ error: "Authentication required" });
+  }
+
+  const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 100);
+  const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+
+  const result = await persistence.getUserNotifications(req.userId, { limit, offset });
+  return res.json(result);
+});
+
+app.get("/api/notifications/unread-count", async (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ error: "Authentication required" });
+  }
+
+  const count = await persistence.getUnreadNotificationCount(req.userId);
+  return res.json({ unreadCount: count });
+});
+
+app.post("/api/notifications/read", async (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ error: "Authentication required" });
+  }
+
+  const { alertIds, all } = req.body ?? {};
+
+  if (all === true) {
+    const result = await persistence.markAllNotificationsRead(req.userId);
+    return res.json({ ok: result.ok });
+  }
+
+  if (!Array.isArray(alertIds) || alertIds.length === 0) {
+    return res.status(400).json({ error: "alertIds array or all:true is required" });
+  }
+
+  // H5: Bound alertIds array size
+  if (alertIds.length > 100) {
+    return res.status(400).json({ error: "alertIds max 100" });
+  }
+
+  // Validate UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const valid = alertIds.every((id) => typeof id === "string" && uuidRegex.test(id));
+  if (!valid) {
+    return res.status(400).json({ error: "alertIds must be valid UUIDs" });
+  }
+
+  const result = await persistence.markNotificationsRead(req.userId, alertIds);
+  return res.json({ ok: result.ok });
+});
+
 app.get("/api/metrics", (req, res) => {
-  if (latestSessionId && sessions.has(latestSessionId)) {
-    return res.json(sessions.get(latestSessionId).metrics);
+  const latestSession = getLatestSessionForUser(req.userId);
+  if (latestSession) {
+    return res.json(latestSession.metrics);
   }
   return res.json(generateSimulatedMetrics());
 });
 
 app.post("/api/metrics", (req, res) => {
+  // H1: Require authentication
+  if (!req.userId) {
+    return res.status(401).json({ error: "Authentication required" });
+  }
+
   const payload = req.body;
   if (!payload || typeof payload !== "object") {
     return res.status(400).json({ error: "Invalid payload." });
@@ -854,17 +1404,17 @@ app.post("/api/metrics", (req, res) => {
     });
   }
 
-  // Backwards-compat: update a specific session if provided.
+  // Backwards-compat: update a specific session if provided, else use latest for this user.
   const session =
     (sessionId && sessions.get(sessionId)) ||
-    (latestSessionId && sessions.get(latestSessionId));
+    getLatestSessionForUser(req.userId);
 
   if (!session) {
     return res.status(404).json({ error: "No active session. Create one first via POST /api/sessions." });
   }
 
-  // Verify ownership
-  if (session.userId && req.userId && session.userId !== req.userId) {
+  // Verify ownership — always check, no null-bypass
+  if (session.userId !== req.userId) {
     return res.status(403).json({ error: "Access denied" });
   }
 
@@ -881,10 +1431,92 @@ app.post("/api/metrics", (req, res) => {
 
 // Global error handler (Express 5 requires 4-arg signature)
 app.use((err, req, res, _next) => {
-  console.error(`[server] Unhandled error: ${err?.message ?? err}`);
+  log.error("server", `Unhandled error: ${err?.message ?? err}`);
   res.status(500).json({ error: "Internal server error" });
 });
 
 server.listen(PORT, () => {
-  console.log(`Backend listening on port ${PORT}`);
+  log.info("server", `Backend listening on port ${PORT}`);
+});
+
+/* ------------------------------------------------------------------ */
+/*  Session garbage collection                                         */
+/* ------------------------------------------------------------------ */
+
+const SESSION_GC_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
+const SESSION_GC_MAX_AGE_MS = 60 * 60 * 1000;  // 1 hour after ended
+
+const sessionGcInterval = setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of sessions) {
+    if (!session.endedAt) continue;
+    const endedMs = new Date(session.endedAt).getTime();
+    if (now - endedMs > SESSION_GC_MAX_AGE_MS) {
+      // Clean up resources
+      session.stt?.end?.();
+      session.subscribers.clear();
+      frameInFlight.delete(id);
+      sessions.delete(id);
+      log.info("gc", `Garbage-collected session ${id}`);
+    }
+  }
+
+  // Clean up orphaned frameInFlight entries for sessions that no longer exist
+  for (const id of frameInFlight.keys()) {
+    if (!sessions.has(id)) {
+      frameInFlight.delete(id);
+    }
+  }
+}, SESSION_GC_INTERVAL_MS);
+
+/* ------------------------------------------------------------------ */
+/*  Graceful shutdown                                                   */
+/* ------------------------------------------------------------------ */
+
+let isShuttingDown = false;
+
+function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  log.info("server", `${signal} received — shutting down gracefully...`);
+
+  // Stop accepting new connections
+  server.close(() => {
+    log.info("server", "HTTP server closed");
+  });
+
+  // Stop broadcast loop and GC
+  if (broadcastInterval) clearInterval(broadcastInterval);
+  clearInterval(sessionGcInterval);
+
+  // Close all WebSocket clients
+  for (const client of wssSubscribe.clients) {
+    client.close(1001, "Server shutting down");
+  }
+  for (const client of wssIngest.clients) {
+    client.close(1001, "Server shutting down");
+  }
+
+  // End all STT streams and clean up bots
+  for (const [, session] of sessions) {
+    session.stt?.end?.();
+    session.stt = null;
+  }
+  botManager.cleanupAll?.();
+
+  // Force exit after 10s if cleanup hasn't finished
+  setTimeout(() => {
+    log.warn("server", "Forced exit after 10s timeout");
+    process.exit(1);
+  }, 10_000).unref();
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+process.on("uncaughtException", (err) => {
+  log.error("uncaught", `Uncaught exception: ${err.message}`, { stack: err.stack });
+});
+process.on("unhandledRejection", (reason) => {
+  log.error("unhandled-rejection", `Unhandled rejection: ${reason}`, { stack: reason?.stack });
 });

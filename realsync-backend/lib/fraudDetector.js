@@ -117,7 +117,10 @@ function scoreTranscriptPatterns(text) {
     const matches = [];
 
     for (const { phrase, weight } of rule.patterns) {
-      if (hay.includes(phrase)) {
+      // Use word boundaries so "otp" doesn't match "topology", etc.
+      const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(`\\b${escaped}\\b`);
+      if (regex.test(hay)) {
         ruleScore += weight;
         matches.push(phrase);
       }
@@ -177,6 +180,8 @@ class FraudDetector {
   constructor() {
     /** @type {Map<string, number>} ruleKey → lastEmittedAt */
     this.cooldowns = new Map();
+    /** @type {Map<string, number>} behavioral category → lastEmittedAt */
+    this._behavioralCooldowns = new Map();
     /** Rolling buffer of recent transcript lines (last 60s) */
     this.recentLines = [];
   }
@@ -211,6 +216,9 @@ class FraudDetector {
   evaluate(text, sessionMetrics) {
     this.addLine(text);
 
+    // M14: Trim stale lines even during idle periods
+    this.recentLines = this.recentLines.filter((l) => Date.now() - l.ts < 60_000);
+
     const alerts = [];
 
     // Score the individual line
@@ -220,8 +228,8 @@ class FraudDetector {
     const windowText = this.recentLines.map((l) => l.text).join(" ");
     const windowResult = scoreTranscriptPatterns(windowText);
 
-    // Only use accumulated window if the current line has some signal (>= 0.1)
-    const result = lineResult.score >= 0.1 && windowResult.score > lineResult.score ? windowResult : lineResult;
+    // Use accumulated window when it scores higher than the individual line
+    const result = windowResult.score > lineResult.score ? windowResult : lineResult;
 
     if (result.score < 0.3) return alerts; // Below threshold
 
@@ -231,7 +239,7 @@ class FraudDetector {
 
     const severity = deriveSeverity(fusedScore);
 
-    const alertKey = `fraud_${result.ruleName}_${severity}`;
+    const alertKey = `fraud_${result.ruleName}`;
     if (!this._canEmit(alertKey)) return alerts;
 
     const matchList = result.matches.join(", ");
@@ -257,11 +265,73 @@ class FraudDetector {
   }
 
   /**
+   * Evaluate behavioral signals from DeBERTa NLI analysis.
+   *
+   * @param {object} behavioralSignals - { signals: [{hypothesis, category, score, severity}], highestScore, model }
+   * @param {object} sessionMetrics    - session.metrics (has deepfake.riskLevel, identity.riskLevel, etc.)
+   * @returns {object[]}                 Array of alert objects (may be empty)
+   */
+  evaluateBehavioral(behavioralSignals, sessionMetrics) {
+    const alerts = [];
+    if (!behavioralSignals?.signals?.length) return alerts;
+
+    const deepfakeRisk = sessionMetrics?.deepfake?.riskLevel || "low";
+    const identityRisk = sessionMetrics?.identity?.riskLevel || "low";
+
+    // Visual risk boost (same formula as keyword detection)
+    let visualBoost = 0;
+    if (deepfakeRisk === "high") visualBoost += 0.5;
+    else if (deepfakeRisk === "medium") visualBoost += 0.25;
+    if (identityRisk === "high") visualBoost += 0.3;
+    else if (identityRisk === "medium") visualBoost += 0.15;
+
+    // Category mapping for alert system
+    const categoryMap = {
+      social_engineering: "scam",
+      credential_theft: "scam",
+      impersonation: "scam",
+      emotional_manipulation: "scam",
+      isolation_tactic: "scam",
+    };
+
+    for (const signal of behavioralSignals.signals) {
+      const boostedScore = Math.min(1.0, signal.score + visualBoost);
+      const cooldownKey = `behavioral_${signal.category}`;
+
+      // 60-second cooldown per category
+      const lastEmit = this._behavioralCooldowns.get(cooldownKey) || 0;
+      if (Date.now() - lastEmit < 60000) continue;
+
+      let severity;
+      if (boostedScore >= 0.8) severity = "high";
+      else if (boostedScore >= 0.65) severity = "medium";
+      else continue;
+
+      this._behavioralCooldowns.set(cooldownKey, Date.now());
+
+      const category = categoryMap[signal.category] || "scam";
+
+      alerts.push({
+        alertId: uuidv4(),
+        severity,
+        category,
+        title: `Behavioral: ${signal.hypothesis.substring(0, 50)}`,
+        message: `AI behavioral analysis detected: "${signal.hypothesis}" (confidence: ${boostedScore.toFixed(2)})`,
+        source: { model: behavioralSignals.model || "DeBERTa-v3-NLI", confidence: boostedScore },
+        ts: new Date().toISOString(),
+      });
+    }
+
+    return alerts;
+  }
+
+  /**
    * Reset state (for new session).
    */
   reset() {
     this.cooldowns.clear();
     this.recentLines = [];
+    if (this._behavioralCooldowns) this._behavioralCooldowns.clear();
   }
 }
 

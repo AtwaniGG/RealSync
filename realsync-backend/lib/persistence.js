@@ -11,6 +11,7 @@
  */
 
 const { getClient } = require("./supabaseClient");
+const log = require("./logger");
 
 /* ------------------------------------------------------------------ */
 /*  Sessions                                                           */
@@ -35,7 +36,7 @@ async function createSession({
   });
 
   if (error) {
-    console.warn(`[persistence] createSession error: ${error.message}`);
+    log.warn("persistence", `createSession error: ${error.message}`);
     return { ok: false, error: error.message };
   }
   return { ok: true };
@@ -51,10 +52,56 @@ async function endSession(sessionId) {
     .eq("id", sessionId);
 
   if (error) {
-    console.warn(`[persistence] endSession error: ${error.message}`);
+    log.warn("persistence", `endSession error: ${error.message}`);
     return { ok: false, error: error.message };
   }
   return { ok: true };
+}
+
+async function getActiveSessions(userId) {
+  const db = getClient();
+  if (!db) return [];
+
+  let query = db.from("sessions").select("*").is("ended_at", null);
+  if (userId) query = query.eq("user_id", userId);
+  const { data, error } = await query.order("created_at", { ascending: false });
+
+  if (error) {
+    log.warn("persistence", `getActiveSessions: ${error.message}`);
+    return [];
+  }
+  return data || [];
+}
+
+async function getUserSessions(userId, { limit = 50, offset = 0 } = {}) {
+  const db = getClient();
+  if (!db) return [];
+
+  let query = db.from("sessions").select("*");
+  if (userId) query = query.eq("user_id", userId);
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  if (error) {
+    log.warn("persistence", `getUserSessions: ${error.message}`);
+    return [];
+  }
+  return data || [];
+}
+
+async function getSessionById(sessionId) {
+  const db = getClient();
+  if (!db) return null;
+
+  const { data, error } = await db
+    .from("sessions")
+    .select("*")
+    .eq("id", sessionId)
+    .single();
+
+  if (error) return null;
+  return data;
 }
 
 async function updateBotStatus(sessionId, botStatus) {
@@ -67,7 +114,7 @@ async function updateBotStatus(sessionId, botStatus) {
     .eq("id", sessionId);
 
   if (error) {
-    console.warn(`[persistence] updateBotStatus error: ${error.message}`);
+    log.warn("persistence", `updateBotStatus error: ${error.message}`);
   }
   return { ok: !error };
 }
@@ -90,12 +137,12 @@ async function insertTranscriptLine(sessionId, line) {
   });
 
   if (error) {
-    console.warn(`[persistence] insertTranscriptLine error: ${error.message}`);
+    log.warn("persistence", `insertTranscriptLine error: ${error.message}`);
   }
   return { ok: !error };
 }
 
-async function getSessionTranscript(sessionId) {
+async function getSessionTranscript(sessionId, { limit = 500, offset = 0 } = {}) {
   const db = getClient();
   if (!db) return [];
 
@@ -103,12 +150,11 @@ async function getSessionTranscript(sessionId) {
     .from("transcript_lines")
     .select("*")
     .eq("session_id", sessionId)
-    .order("ts", { ascending: true });
+    .order("ts", { ascending: true })
+    .range(offset, offset + limit - 1);
 
   if (error) {
-    console.warn(
-      `[persistence] getSessionTranscript error: ${error.message}`
-    );
+    log.warn("persistence", `getSessionTranscript error: ${error.message}`);
     return [];
   }
   return data || [];
@@ -131,16 +177,17 @@ async function insertAlert(sessionId, alert) {
     message: alert.message,
     confidence: alert.source?.confidence ?? null,
     source_model: alert.source?.model ?? null,
+    recommendation: alert.recommendation || null,
     ts: alert.ts || new Date().toISOString(),
   });
 
   if (error) {
-    console.warn(`[persistence] insertAlert error: ${error.message}`);
+    log.warn("persistence", `insertAlert error: ${error.message}`);
   }
   return { ok: !error };
 }
 
-async function getSessionAlerts(sessionId) {
+async function getSessionAlerts(sessionId, { limit = 200, offset = 0 } = {}) {
   const db = getClient();
   if (!db) return [];
 
@@ -148,10 +195,11 @@ async function getSessionAlerts(sessionId) {
     .from("alerts")
     .select("*")
     .eq("session_id", sessionId)
-    .order("ts", { ascending: true });
+    .order("ts", { ascending: true })
+    .range(offset, offset + limit - 1);
 
   if (error) {
-    console.warn(`[persistence] getSessionAlerts error: ${error.message}`);
+    log.warn("persistence", `getSessionAlerts error: ${error.message}`);
     return [];
   }
   return data || [];
@@ -174,7 +222,7 @@ async function insertSuggestion(sessionId, suggestion) {
   });
 
   if (error) {
-    console.warn(`[persistence] insertSuggestion error: ${error.message}`);
+    log.warn("persistence", `insertSuggestion error: ${error.message}`);
   }
   return { ok: !error };
 }
@@ -194,9 +242,7 @@ async function insertMetricsSnapshot(sessionId, metrics) {
   });
 
   if (error) {
-    console.warn(
-      `[persistence] insertMetricsSnapshot error: ${error.message}`
-    );
+    log.warn("persistence", `insertMetricsSnapshot error: ${error.message}`);
   }
   return { ok: !error };
 }
@@ -220,11 +266,11 @@ async function generateReport(sessionId) {
     };
   }
 
-  // Gather counts
+  // M10: Single query for alerts — compute count and severity breakdown from one result
   const [alertsRes, transcriptRes] = await Promise.all([
     db
       .from("alerts")
-      .select("severity", { count: "exact" })
+      .select("severity")
       .eq("session_id", sessionId),
     db
       .from("transcript_lines")
@@ -232,17 +278,12 @@ async function generateReport(sessionId) {
       .eq("session_id", sessionId),
   ]);
 
-  const alertCount = alertsRes.count || 0;
+  const alertRows = alertsRes.data || [];
+  const alertCount = alertRows.length;
   const transcriptCount = transcriptRes.count || 0;
 
-  // Severity breakdown
-  const { data: severityCounts } = await db
-    .from("alerts")
-    .select("severity")
-    .eq("session_id", sessionId);
-
   const severityBreakdown = { low: 0, medium: 0, high: 0, critical: 0 };
-  (severityCounts || []).forEach((a) => {
+  alertRows.forEach((a) => {
     if (severityBreakdown[a.severity] !== undefined) {
       severityBreakdown[a.severity]++;
     }
@@ -262,7 +303,7 @@ async function generateReport(sessionId) {
   });
 
   if (error) {
-    console.warn(`[persistence] generateReport error: ${error.message}`);
+    log.warn("persistence", `generateReport error: ${error.message}`);
   }
 
   return { ok: !error, report: summary };
@@ -284,9 +325,152 @@ async function getSessionReport(sessionId) {
   return data;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Notifications                                                      */
+/* ------------------------------------------------------------------ */
+
+async function getUserNotifications(userId, { limit = 50, offset = 0 } = {}) {
+  const db = getClient();
+  if (!db) return { notifications: [], unreadCount: 0 };
+
+  // 7.1: Run alerts query and unread-count RPC in parallel (independent queries)
+  const [alertsResult, unreadResult] = await Promise.all([
+    db
+      .from("alerts")
+      .select(`
+        id,
+        session_id,
+        severity,
+        category,
+        title,
+        message,
+        confidence,
+        source_model,
+        recommendation,
+        ts,
+        created_at,
+        sessions!inner(user_id),
+        notification_reads!left(read_at)
+      `)
+      .eq("sessions.user_id", userId)
+      .eq("notification_reads.user_id", userId)
+      .order("ts", { ascending: false })
+      .range(offset, offset + limit - 1),
+    db.rpc("get_unread_notification_count", { p_user_id: userId }),
+  ]);
+
+  if (alertsResult.error) {
+    log.warn("persistence", `getUserNotifications error: ${alertsResult.error.message}`);
+    return { notifications: [], unreadCount: 0 };
+  }
+
+  const notifications = (alertsResult.data || []).map((row) => ({
+    id: row.id,
+    sessionId: row.session_id,
+    severity: row.severity,
+    category: row.category,
+    title: row.title,
+    message: row.message,
+    confidence: row.confidence,
+    sourceModel: row.source_model,
+    recommendation: row.recommendation || null,
+    ts: row.ts,
+    read: row.notification_reads && row.notification_reads.length > 0,
+  }));
+
+  // Use RPC result as primary; fall back to client-side count if RPC failed
+  let unreadCount;
+  if (unreadResult.error) {
+    unreadCount = notifications.filter((n) => !n.read).length;
+  } else {
+    unreadCount = unreadResult.data ?? 0;
+  }
+
+  return { notifications, unreadCount };
+}
+
+async function markNotificationsRead(userId, alertIds) {
+  const db = getClient();
+  if (!db) return { ok: true, stub: true };
+
+  // H21: Verify alerts belong to this user's sessions before marking read
+  const { data: owned } = await db
+    .from("alerts")
+    .select("id, sessions!inner(user_id)")
+    .in("id", alertIds)
+    .eq("sessions.user_id", userId);
+
+  const ownedIds = (owned || []).map((a) => a.id);
+  if (ownedIds.length === 0) return { ok: true };
+
+  const rows = ownedIds.map((alertId) => ({
+    user_id: userId,
+    alert_id: alertId,
+  }));
+
+  const { error } = await db
+    .from("notification_reads")
+    .upsert(rows, { onConflict: "user_id,alert_id" });
+
+  if (error) {
+    log.warn("persistence", `markNotificationsRead error: ${error.message}`);
+  }
+  return { ok: !error };
+}
+
+async function markAllNotificationsRead(userId) {
+  const db = getClient();
+  if (!db) return { ok: true, stub: true };
+
+  // Get unread alert IDs for this user (7.2: capped at 1000 to prevent unbounded fetch)
+  const { data, error: fetchError } = await db
+    .from("alerts")
+    .select("id, sessions!inner(user_id)")
+    .eq("sessions.user_id", userId)
+    .limit(1000);
+
+  if (fetchError || !data || data.length === 0) {
+    return { ok: !fetchError };
+  }
+
+  const rows = data.map((alert) => ({
+    user_id: userId,
+    alert_id: alert.id,
+  }));
+
+  const { error } = await db
+    .from("notification_reads")
+    .upsert(rows, { onConflict: "user_id,alert_id" });
+
+  if (error) {
+    log.warn("persistence", `markAllNotificationsRead error: ${error.message}`);
+  }
+  return { ok: !error };
+}
+
+async function getUnreadNotificationCount(userId) {
+  const db = getClient();
+  if (!db) return 0;
+
+  const { data, error } = await db.rpc("get_unread_notification_count", { p_user_id: userId });
+  if (error) {
+    log.warn("persistence", `getUnreadNotificationCount error: ${error.message}`);
+    return 0;
+  }
+  return data ?? 0;
+}
+
+/** Returns true if Supabase client is configured and available. */
+function isAvailable() {
+  return getClient() !== null;
+}
+
 module.exports = {
   createSession,
   endSession,
+  getActiveSessions,
+  getUserSessions,
+  getSessionById,
   updateBotStatus,
   insertTranscriptLine,
   getSessionTranscript,
@@ -296,4 +480,9 @@ module.exports = {
   insertMetricsSnapshot,
   generateReport,
   getSessionReport,
+  getUserNotifications,
+  markNotificationsRead,
+  markAllNotificationsRead,
+  getUnreadNotificationCount,
+  isAvailable,
 };

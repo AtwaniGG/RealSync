@@ -1,15 +1,19 @@
+import React from "react";
+import { createRoot } from "react-dom/client";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ThemeProvider } from "./contexts/ThemeContext";
+import App from "./App.tsx";
+import "./index.css";
 
-  import { createRoot } from "react-dom/client";
-  import App from "./App.tsx";
-  import "./index.css";
-
-  console.log('main.tsx loaded');
-
-  const root = document.getElementById("root");
-  if (!root) {
-    console.error('Root element not found!');
-  } else {
-    console.log('Root element found, mounting React...');
-    createRoot(root).render(<App />);
-    console.log('React render called');
-  }
+const root = document.getElementById("root");
+if (root) {
+  createRoot(root).render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <ThemeProvider>
+          <App />
+        </ThemeProvider>
+      </ErrorBoundary>
+    </React.StrictMode>
+  );
+}
