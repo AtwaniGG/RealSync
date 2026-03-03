@@ -8,6 +8,12 @@ const { v4: uuidv4 } = require("uuid");
 const { execFileSync } = require("child_process");
 require("dotenv").config();
 
+// Production startup guard — refuse to start without Supabase in production
+if (process.env.NODE_ENV === "production" && (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY)) {
+  console.error("FATAL: SUPABASE_URL and SUPABASE_SERVICE_KEY are required in production. Exiting.");
+  process.exit(1);
+}
+
 const { createSttStream } = require("./lib/gcpStt");
 const { MEETING_TYPES, generateSuggestions } = require("./lib/suggestions");
 const { analyzeFrame, analyzeAudio, analyzeText, checkHealth: checkAiHealth, clearSession: clearAiSession } = require("./lib/aiClient");
@@ -365,7 +371,11 @@ const broadcastToSession = (sessionId, message) => {
   const payload = JSON.stringify({ sessionId, ...message });
   session.subscribers.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
+      try {
+        client.send(payload);
+      } catch {
+        // Connection died between readyState check and send — safe to ignore
+      }
     }
   });
 };
@@ -476,7 +486,7 @@ const handleTranscript = (session, transcript) => {
   if (isFinal) {
     session.transcriptState.lines.push({ text, ts, confidence, speaker });
     // M17: Cap in-memory transcript lines to prevent unbounded growth
-    if (session.transcriptState.lines.length > 2000) {
+    if (session.transcriptState.lines.length >= 2000) {
       session.transcriptState.lines = session.transcriptState.lines.slice(-2000);
     }
     session.transcriptState.interim = "";
@@ -1236,12 +1246,14 @@ app.post("/api/sessions/:id/join", requireSessionOwner(getSession, rehydrateSess
     return res.status(400).json({ error: "meetingUrl is required" });
   }
 
-  // H4: Validate URL — only allow https://*.zoom.us
+  // H4: Validate URL — allow https://*.zoom.us and https://*.zoom.com
   try {
     const u = new URL(meetingUrl);
-    if (u.protocol !== "https:" || !u.hostname.endsWith(".zoom.us")) throw new Error("Not a Zoom URL");
+    const isZoom = u.hostname.endsWith(".zoom.us") || u.hostname.endsWith(".zoom.com")
+      || u.hostname === "zoom.us" || u.hostname === "zoom.com";
+    if (u.protocol !== "https:" || !isZoom) throw new Error("Not a Zoom URL");
   } catch {
-    return res.status(400).json({ error: "meetingUrl must be https://*.zoom.us" });
+    return res.status(400).json({ error: "meetingUrl must be a valid Zoom URL (https://...zoom.us or zoom.com)" });
   }
 
   session.meetingUrl = meetingUrl;
@@ -1303,7 +1315,9 @@ app.get("/api/sessions/:id/alerts", requireSessionOwner(getSession, rehydrateSes
   // Try Supabase first, fall back to in-memory
   const persisted = await persistence.getSessionAlerts(session.id);
   if (persisted && persisted.length > 0) {
-    return res.json({ alerts: persisted });
+    // Normalize DB rows: Supabase returns `id`, frontend expects `alertId`
+    const normalized = persisted.map((a) => ({ ...a, alertId: a.alertId || a.id }));
+    return res.json({ alerts: normalized });
   }
   return res.json({ alerts: session.alerts || [] });
 });
@@ -1442,6 +1456,9 @@ app.patch("/api/settings", async (req, res) => {
 });
 
 app.get("/api/metrics", (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ error: "Authentication required" });
+  }
   const latestSession = getLatestSessionForUser(req.userId);
   if (latestSession) {
     return res.json(latestSession.metrics);
@@ -1547,6 +1564,10 @@ const sessionGcInterval = setInterval(() => {
     if (now - endedMs > SESSION_GC_MAX_AGE_MS) {
       // Clean up resources
       session.stt?.end?.();
+      // Close lingering subscriber WebSocket connections before clearing
+      session.subscribers.forEach((client) => {
+        try { client.close(1000, "Session expired"); } catch { /* best effort */ }
+      });
       session.subscribers.clear();
       frameInFlight.delete(id);
       sessions.delete(id);
