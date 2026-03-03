@@ -273,8 +273,10 @@ export function DashboardScreen({
     endingSessionRef.current = true;
     setEndingSession(true);
     try {
-      // 1. Tell the bot to leave the meeting
-      await authFetch(`/api/sessions/${sessionId}/leave`, { method: 'POST' }).catch(() => {});
+      // 1. Tell the bot to leave the meeting (best-effort, don't block session stop)
+      await authFetch(`/api/sessions/${sessionId}/leave`, { method: 'POST' }).catch((err: unknown) => {
+        console.warn('Bot leave request failed (continuing with stop):', err);
+      });
       // 2. Stop the session (generates report)
       const res = await authFetch(`/api/sessions/${sessionId}/stop`, { method: 'POST' });
       if (!res.ok) {
@@ -302,7 +304,9 @@ export function DashboardScreen({
   const connectionLabel = wsConnected ? 'live' : 'polling';
 
   const emotionScores = useMemo(() => {
-    const entries = Object.entries(displayMetrics.emotion.scores) as Array<[EmotionLabel, number]>;
+    const scores = displayMetrics.emotion?.scores;
+    if (!scores || typeof scores !== 'object') return [];
+    const entries = Object.entries(scores) as Array<[EmotionLabel, number]>;
     return entries
       .map(([label, value]) => ({ label, value: toPercent(value) }))
       .sort((a, b) => b.value - a.value)

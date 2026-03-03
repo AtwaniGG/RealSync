@@ -122,6 +122,15 @@
 - **Verification needed**: `pip install facenet-pytorch==2.6.0`, start AI service, confirm FaceNet warmup log + health check `identity: "loaded"` + `aggregated.temporal` in frame responses.
 - **Status**: IMPLEMENTED — changes saved locally, not committed
 
-### 18. Rule: Never commit on RealSync repo without explicit user instruction
-- **Rule**: Do NOT run `git add` or `git commit` on the RealSync repo. The user manages commits themselves.
+### 18. Rule: NEVER run git commands — only provide them for the user to copy
+- **Rule**: Do NOT run `git add`, `git commit`, `git push`, or any git command via the Bash tool. Only output the commands as text for the user to copy-paste themselves.
+- **Mistake**: Ran `git add && git commit` directly when the user asked for "the commands" — they wanted text to copy, not execution.
 - **Applies to**: All files under `/Users/ahmed/Desktop/CSIT321/term2_files/RealSync/`
+- **Exception**: `git status`, `git diff`, and `git log` are OK for reading state during planning.
+
+### 19. Audit false positives — always verify before fixing
+- **Mistake**: Audit report flagged 3 "critical" issues that were actually correct code:
+  - CRIT-1: `persistence.isAvailable()` was claimed missing — it existed at line 518
+  - CRIT-3: `models.mobilenet_v2(weights=None)` flagged as "blank weights" — intentional; full checkpoint loaded from file
+  - HIGH-1: WebSocket auth race condition — message handler was registered AFTER `await` completed
+- **Rule**: Always read the actual code before implementing a fix. Audit reports can be wrong. Verify each issue independently.

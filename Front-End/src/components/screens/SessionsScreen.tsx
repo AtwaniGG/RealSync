@@ -159,6 +159,8 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
   /** Schedule a session to auto-join at the given time */
   const scheduleAutoJoin = useCallback(
     (entry: ScheduledSession) => {
+      // Prevent double-scheduling: skip if a timer already exists for this session
+      if (scheduledTimersRef.current.has(entry.sessionId)) return;
       const delayMs = new Date(entry.scheduledAt).getTime() - Date.now();
       if (delayMs <= 0) {
         // Time has already passed -- join now
@@ -305,6 +307,7 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
   // -- Real session history from API --
   const [historySessions, setHistorySessions] = useState<HistorySession[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const PAGE_SIZE = 5;
 
@@ -320,9 +323,10 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
           // The API returns an array of session summaries
           const sessions = Array.isArray(data) ? data : (data.sessions ?? []);
           setHistorySessions(sessions);
+          setHistoryError(null);
         }
       } catch {
-        // Silently fail -- empty list
+        if (!cancelled) setHistoryError('Failed to load session history');
       } finally {
         if (!cancelled) setHistoryLoading(false);
       }
@@ -392,6 +396,11 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
               <div className="flex items-center justify-center py-16">
                 <Loader2 className="w-6 h-6 text-cyan-400 animate-spin" />
                 <span className="ml-3 text-gray-400">Loading sessions...</span>
+              </div>
+            ) : historyError ? (
+              <div className="flex flex-col items-center justify-center py-16 text-gray-500">
+                <p className="text-lg text-red-400 mb-1">{historyError}</p>
+                <p className="text-sm">Check your connection and try again.</p>
               </div>
             ) : historySessions.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-gray-500">

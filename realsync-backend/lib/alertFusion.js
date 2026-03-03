@@ -68,11 +68,10 @@ class AlertFusionEngine {
   _checkCooldown(key, cooldownMs = DEFAULT_COOLDOWN_MS) {
     const now = Date.now();
 
-    // Evict stale entries when the map grows too large
-    if (this.cooldowns.size > 200) {
-      const expiryThreshold = EVICT_AFTER_MS;
+    // Evict stale entries periodically (every 50 entries or every check after 200)
+    if (this.cooldowns.size > 50) {
       for (const [k, ts] of this.cooldowns) {
-        if (now - ts > expiryThreshold) {
+        if (now - ts > EVICT_AFTER_MS) {
           this.cooldowns.delete(k);
         }
       }

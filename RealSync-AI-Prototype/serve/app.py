@@ -23,6 +23,7 @@ SRC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -31,6 +32,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 
+INFERENCE_TIMEOUT_S = 30  # Max seconds for any single inference call
+
 from serve.config import PORT, HOST
 from serve.inference import analyze_frame, get_identity_tracker, cleanup_session, _utcnow_iso, _get_face_detector
 from serve.deepfake_model import get_deepfake_model
@@ -38,8 +41,14 @@ from serve.emotion_model import get_emotion_model
 from serve.audio_model import get_audio_model, predict_audio
 from serve.text_analyzer import get_text_analyzer, analyze_text as analyze_text_fn
 
-# API key for service-to-service auth (optional — if not set, auth is disabled)
+# API key for service-to-service auth (required in production)
 AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
+
+if not AI_API_KEY and os.getenv("ENV", "").lower() == "production":
+    print("FATAL: AI_API_KEY is required in production. Exiting.")
+    sys.exit(1)
+elif not AI_API_KEY:
+    print("[app] WARNING: AI_API_KEY not set — auth is disabled (dev mode)")
 
 # ---------------------------------------------------------------
 # Lifespan
@@ -206,13 +215,18 @@ async def analyze_frame_endpoint(request: AnalyzeFrameRequest):
         raise HTTPException(status_code=400, detail="sessionId is required")
 
     try:
-        result = await run_in_threadpool(
-            analyze_frame,
-            session_id=request.sessionId,
-            frame_b64=request.frameB64,
-            captured_at=request.capturedAt,
+        result = await asyncio.wait_for(
+            run_in_threadpool(
+                analyze_frame,
+                session_id=request.sessionId,
+                frame_b64=request.frameB64,
+                captured_at=request.capturedAt,
+            ),
+            timeout=INFERENCE_TIMEOUT_S,
         )
         return result
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Frame analysis timed out")
     except Exception as e:
         print(f"[app] Frame analysis failed: {e}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
@@ -230,13 +244,18 @@ async def analyze_audio_endpoint(request: AnalyzeAudioRequest):
         raise HTTPException(status_code=413, detail="audioB64 payload exceeds 4MB limit")
 
     try:
-        result = await run_in_threadpool(predict_audio, request.audioB64)
+        result = await asyncio.wait_for(
+            run_in_threadpool(predict_audio, request.audioB64),
+            timeout=INFERENCE_TIMEOUT_S,
+        )
         processed_at = _utcnow_iso()
         return {
             "sessionId": request.sessionId,
             "processedAt": processed_at,
             "audio": result,
         }
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Audio analysis timed out")
     except Exception as e:
         print(f"[app] Audio analysis failed: {e}")
         raise HTTPException(status_code=500, detail=f"Audio analysis failed: {str(e)}")
@@ -254,13 +273,18 @@ async def analyze_text_endpoint(request: AnalyzeTextRequest):
         raise HTTPException(status_code=413, detail="text payload exceeds 50KB limit")
 
     try:
-        result = await run_in_threadpool(analyze_text_fn, request.text)
+        result = await asyncio.wait_for(
+            run_in_threadpool(analyze_text_fn, request.text),
+            timeout=INFERENCE_TIMEOUT_S,
+        )
         processed_at = _utcnow_iso()
         return {
             "sessionId": request.sessionId,
             "processedAt": processed_at,
             "behavioral": result,
         }
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Text analysis timed out")
     except Exception as e:
         print(f"[app] Text analysis failed: {e}")
         raise HTTPException(status_code=500, detail=f"Text analysis failed: {str(e)}")

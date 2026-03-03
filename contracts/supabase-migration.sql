@@ -182,3 +182,47 @@ CREATE POLICY "Access own metrics"
 CREATE POLICY "Access own reports"
   ON session_reports FOR ALL
   USING (session_id IN (SELECT id FROM sessions WHERE user_id = auth.uid()));
+
+-- =================================================================
+-- Schema additions (v2) — missing columns and tables
+-- =================================================================
+
+-- Add recommendation column to alerts (used by insertAlert in persistence.js)
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS recommendation TEXT;
+
+-- Add detection_settings JSONB to profiles (user preferences for AI toggles)
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS detection_settings JSONB DEFAULT '{}';
+
+-- =================================================================
+-- Notification reads (tracks which alerts a user has read)
+-- =================================================================
+CREATE TABLE IF NOT EXISTS notification_reads (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id       UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  alert_id      UUID NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+  read_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(user_id, alert_id)
+);
+CREATE INDEX IF NOT EXISTS idx_notification_reads_user ON notification_reads(user_id);
+CREATE INDEX IF NOT EXISTS idx_notification_reads_alert ON notification_reads(alert_id);
+
+ALTER TABLE notification_reads ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view own notification reads"
+  ON notification_reads FOR ALL
+  USING (user_id = auth.uid());
+
+-- =================================================================
+-- RPC: get_unread_notification_count (used by persistence.js)
+-- =================================================================
+CREATE OR REPLACE FUNCTION get_unread_notification_count(p_user_id UUID)
+RETURNS BIGINT AS $$
+  SELECT COUNT(*)
+  FROM alerts a
+  JOIN sessions s ON a.session_id = s.id
+  WHERE s.user_id = p_user_id
+    AND NOT EXISTS (
+      SELECT 1 FROM notification_reads nr
+      WHERE nr.alert_id = a.id AND nr.user_id = p_user_id
+    );
+$$ LANGUAGE sql STABLE SECURITY DEFINER;

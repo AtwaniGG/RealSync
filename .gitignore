@@ -39,6 +39,7 @@ realsync-backend/bot/screenshots/
 # Editor/IDE
 .vscode/
 .claude/
+CLAUDE.md
 
 # Environment
 .env
