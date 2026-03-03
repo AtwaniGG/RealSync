@@ -1312,6 +1312,7 @@ class ZoomBotAdapter {
 
         // Create a dedicated AudioContext for capturing
         const captureCtx = new AudioContext({ sampleRate: 48000 });
+        window.__realsyncAudioContext = captureCtx;
         const TARGET_RATE = 16000;
 
         // Merger node: all tapped audio sources connect here

@@ -357,7 +357,14 @@ function GeneralSettings({ profilePhoto, onSaveProfilePhoto, userName, onSaveUse
       </div>
 
       <div className="mt-8 flex justify-end gap-4">
-        <Button variant="outline" className="bg-transparent border-gray-700 text-gray-300" onClick={() => toast.info('Changes discarded')}>
+        <Button variant="outline" className="bg-transparent border-gray-700 text-gray-300" onClick={() => {
+          setNameInput(userName || '');
+          setEmailInput(userEmail || '');
+          setPendingFile(null);
+          if (previewUrl) URL.revokeObjectURL(previewUrl);
+          setPreviewUrl(null);
+          toast.info('Changes discarded');
+        }}>
           Cancel
         </Button>
         <Button className="bg-cyan-400 hover:bg-cyan-500 text-black" onClick={handleSaveChanges} disabled={isSaving}>

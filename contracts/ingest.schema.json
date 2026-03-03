@@ -58,6 +58,26 @@
     },
     {
       "type": "object",
+      "title": "participants",
+      "description": "Participant list update from the bot",
+      "required": ["type", "participants"],
+      "properties": {
+        "type": { "const": "participants" },
+        "participants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "role": { "type": "string" }
+            }
+          }
+        },
+        "ts": { "type": "string", "format": "date-time" }
+      }
+    },
+    {
+      "type": "object",
       "title": "source_status",
       "required": ["type", "status"],
       "properties": {

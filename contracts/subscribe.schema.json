@@ -99,6 +99,30 @@
             "confidence": { "type": "number" }
           }
         },
+        "recommendation": { "type": "string", "description": "Actionable recommendation for the user" },
+        "faceId": { "type": ["integer", "null"], "description": "Face index if alert relates to a specific face" },
+        "participantName": { "type": ["string", "null"], "description": "Participant name if known" },
+        "ts": { "type": "string", "format": "date-time" }
+      }
+    },
+    {
+      "type": "object",
+      "title": "participants",
+      "description": "Current participant list scraped from the meeting",
+      "required": ["type", "sessionId", "participants"],
+      "properties": {
+        "type": { "const": "participants" },
+        "sessionId": { "type": "string" },
+        "participants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "role": { "type": "string" }
+            }
+          }
+        },
         "ts": { "type": "string", "format": "date-time" }
       }
     },
