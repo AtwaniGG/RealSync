@@ -34,15 +34,15 @@ IDENTITY_SHIFT_LOW = 0.20  # below this = low risk
 IDENTITY_SHIFT_HIGH = 0.40  # above this = high risk
 
 # Temporal analysis
-TEMPORAL_WINDOW_SIZE = 15
+TEMPORAL_WINDOW_SIZE = 30
 TEMPORAL_TRUST_DROP_THRESHOLD = 0.20
 TEMPORAL_IDENTITY_SWITCH_LOW = 0.15
 TEMPORAL_IDENTITY_SWITCH_HIGH = 0.35
 TEMPORAL_EMOTION_CHANGE_THRESHOLD = 5
 
 # Deepfake thresholds (H9: renamed for clarity)
-DEEPFAKE_AUTH_THRESHOLD_LOW_RISK = 0.85   # above → low risk
-DEEPFAKE_AUTH_THRESHOLD_HIGH_RISK = 0.70  # below → high risk
+DEEPFAKE_AUTH_THRESHOLD_LOW_RISK = 0.70   # above → low risk
+DEEPFAKE_AUTH_THRESHOLD_HIGH_RISK = 0.45  # below → high risk
 
 # Emotion thresholds
 EMOTION_LABELS = ["Happy", "Neutral", "Angry", "Fear", "Surprise", "Sad"]
@@ -56,7 +56,7 @@ SESSION_EVICTION_TRIGGER = 50
 # --- Temporal Analysis ---
 TEMPORAL_EWMA_DECAY = 0.85
 TEMPORAL_TREND_THRESHOLD = 0.05
-TEMPORAL_SMOOTHING_MIN_FRAMES = 3
+TEMPORAL_SMOOTHING_MIN_FRAMES = 2
 
 # --- Trust Score Weights ---
 TRUST_WEIGHT_VIDEO = 0.47

@@ -145,7 +145,7 @@ export function DashboardScreen({
 
   // Alert and bot status state
   const [alertEvents, setAlertEvents] = useState<AlertEvent[]>([]);
-  const [overlayAlert, setOverlayAlert] = useState<AlertEvent | null>(null);
+
   const [botStatus, setBotStatus] = useState<BotStatus>('idle');
   const [botStreams, setBotStreams] = useState<BotStreams>({ audio: false, video: false, captions: false });
   const [participants, setParticipants] = useState<ParticipantEntry[]>([]);
@@ -155,8 +155,8 @@ export function DashboardScreen({
 
   // Reset per-session UI state when the active session changes.
   useEffect(() => {
+    setMetrics(null);
     setAlertEvents([]);
-    setOverlayAlert(null);
     setBotStatus('idle');
     setBotStreams({ audio: false, video: false, captions: false });
     setParticipants([]);
@@ -198,9 +198,6 @@ export function DashboardScreen({
       };
       setAlertEvents((prev) => [alertEvent, ...prev].slice(0, 100));
 
-      if (alertEvent.severity === 'critical' || alertEvent.severity === 'high') {
-        setOverlayAlert(alertEvent);
-      }
       return;
     }
 
@@ -243,12 +240,12 @@ export function DashboardScreen({
 
   // HTTP polling fallback when WS is disconnected
   useEffect(() => {
-    if (wsConnected) {
+    if (wsConnected || !sessionId) {
       setMetricsError(null);
       return;
     }
 
-    const metricsPath = sessionId ? `/api/sessions/${sessionId}/metrics` : '/api/metrics';
+    const metricsPath = `/api/sessions/${sessionId}/metrics`;
 
     const fetchMetrics = async () => {
       try {
@@ -294,16 +291,19 @@ export function DashboardScreen({
     }
   }, [sessionId, onEndSession]);
 
+  // Show real metrics when available; clean idle state when no session
+  const hasData = metrics !== null;
   const displayMetrics = metrics ?? getFallbackMetrics();
-  const trustScorePercent = toPercent(displayMetrics.trustScore);
+  const trustScorePercent = hasData ? toPercent(displayMetrics.trustScore) : 0;
   const trustDash = (2 * Math.PI * TRUST_CIRCLE_RADIUS * trustScorePercent) / 100;
-  const lastUpdatedLabel = displayMetrics.timestamp
+  const lastUpdatedLabel = hasData && displayMetrics.timestamp
     ? new Date(displayMetrics.timestamp).toLocaleTimeString()
     : '--:--';
-  const sourceLabel = displayMetrics.source === 'external' ? 'model server' : 'simulated';
+  const sourceLabel = !hasData ? 'waiting' : displayMetrics.source === 'external' ? 'model server' : 'simulated';
   const connectionLabel = wsConnected ? 'live' : 'polling';
 
   const emotionScores = useMemo(() => {
+    if (!hasData) return [];
     const scores = displayMetrics.emotion?.scores;
     if (!scores || typeof scores !== 'object') return [];
     const entries = Object.entries(scores) as Array<[EmotionLabel, number]>;
@@ -311,7 +311,7 @@ export function DashboardScreen({
       .map(([label, value]) => ({ label, value: toPercent(value) }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 3);
-  }, [displayMetrics]);
+  }, [displayMetrics, hasData]);
 
   const alerts = useMemo(() => {
     const items: Array<{ id: string; type: 'error' | 'warning' | 'ok'; message: string; time: string }> = [];
@@ -331,8 +331,8 @@ export function DashboardScreen({
       });
     });
 
-    // Metric-derived alerts (only if no real alerts yet)
-    if (filteredEvents.length === 0) {
+    // Metric-derived alerts (only if no real alerts yet and real metrics exist)
+    if (filteredEvents.length === 0 && hasData) {
       if (displayMetrics.deepfake.riskLevel !== 'low') {
         items.push({
           id: 'metric-deepfake',
@@ -373,60 +373,28 @@ export function DashboardScreen({
     return items;
   }, [displayMetrics, alertEvents, selectedFaceId]);
 
-  const confidenceScores = useMemo(() => [
-    { label: 'Audio', value: toPercent(displayMetrics.confidenceLayers.audio ?? 0), color: displayMetrics.confidenceLayers.audio == null ? 'bg-gray-600' : 'bg-cyan-400' },
-    { label: 'Video', value: displayMetrics.cameraOff ? 0 : toPercent(displayMetrics.confidenceLayers.video ?? 0), color: displayMetrics.cameraOff ? 'bg-gray-600' : 'bg-cyan-400' },
-    { label: 'Behavior', value: toPercent(displayMetrics.confidenceLayers.behavior ?? 0), color: 'bg-orange-400' },
-  ], [displayMetrics]);
+  const confidenceScores = useMemo(() => {
+    if (!hasData) return [
+      { label: 'Audio', value: 0, color: 'bg-gray-600' },
+      { label: 'Video', value: 0, color: 'bg-gray-600' },
+      { label: 'Behavior', value: 0, color: 'bg-gray-600' },
+    ];
+    return [
+      { label: 'Audio', value: toPercent(displayMetrics.confidenceLayers.audio ?? 0), color: displayMetrics.confidenceLayers.audio == null ? 'bg-gray-600' : 'bg-cyan-400' },
+      { label: 'Video', value: displayMetrics.cameraOff ? 0 : toPercent(displayMetrics.confidenceLayers.video ?? 0), color: displayMetrics.cameraOff ? 'bg-gray-600' : 'bg-cyan-400' },
+      { label: 'Behavior', value: toPercent(displayMetrics.confidenceLayers.behavior ?? 0), color: 'bg-orange-400' },
+    ];
+  }, [displayMetrics, hasData]);
 
   return (
     <div className="flex h-screen bg-[#0f0f1e]">
-      {/* Critical/High Alert Overlay */}
-      {overlayAlert && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className={`max-w-md w-full mx-4 rounded-xl p-6 border-2 ${
-            overlayAlert.severity === 'critical'
-              ? 'bg-red-950 border-red-500 animate-pulse'
-              : 'bg-orange-950 border-orange-500'
-          }`}>
-            <div className="flex items-start gap-3">
-              <AlertCircle className={`w-8 h-8 flex-shrink-0 ${
-                overlayAlert.severity === 'critical' ? 'text-red-400' : 'text-orange-400'
-              }`} />
-              <div className="flex-1">
-                <p className={`text-lg font-bold ${
-                  overlayAlert.severity === 'critical' ? 'text-red-300' : 'text-orange-300'
-                }`}>
-                  {overlayAlert.title}
-                </p>
-                <p className="text-gray-300 text-sm mt-1">{overlayAlert.message}</p>
-                {overlayAlert.recommendation && (
-                  <div className="mt-3 p-2.5 rounded-lg bg-black/30 border border-cyan-800/50">
-                    <p className="text-cyan-300 text-xs font-semibold mb-1">Recommended Action</p>
-                    <p className="text-cyan-200/90 text-sm">{overlayAlert.recommendation}</p>
-                  </div>
-                )}
-                <p className="text-gray-500 text-xs mt-2">
-                  {overlayAlert.category} &middot; {new Date(overlayAlert.ts).toLocaleTimeString()}
-                </p>
-              </div>
-            </div>
-            <Button
-              className="mt-4 w-full bg-gray-800 hover:bg-gray-700 text-white"
-              onClick={() => setOverlayAlert(null)}
-            >
-              Dismiss
-            </Button>
-          </div>
-        </div>
-      )}
 
       <Sidebar currentScreen="dashboard" onNavigate={onNavigate} />
 
       <div className="flex-1 flex flex-col overflow-hidden">
         <TopBar title="Dashboard" onSignOut={onSignOut} onNavigate={onNavigate} profilePhoto={profilePhoto} userName={userName} userEmail={userEmail} isConnected={wsConnected} activeSessionId={sessionId} onNewSession={onNewSession} onEndSession={handleEndSession} />
 
-        <div className="flex-1 overflow-y-auto p-8">
+        <div className="flex-1 overflow-y-auto p-8 bg-[#0a0a16]">
           <div className="grid grid-cols-3 gap-6">
             {/* Live Trust Score */}
             <div className="bg-[#1a1a2e] rounded-xl p-6 border border-gray-800">
@@ -539,7 +507,8 @@ export function DashboardScreen({
               {/* End Session button */}
               {sessionId && (
                 <Button
-                  className="mt-6 w-full bg-red-600 hover:bg-red-700 text-white px-4 py-2"
+                  variant="destructive"
+                  className="mt-6 w-full bg-red-600 hover:bg-red-700 text-white px-4 py-2 cursor-pointer"
                   onClick={handleEndSession}
                   disabled={endingSession}
                 >
@@ -589,25 +558,12 @@ export function DashboardScreen({
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <p className="text-gray-400 text-sm">Live Emotion</p>
-                  <p className="text-3xl text-white">{displayMetrics.emotion.label}</p>
+                  <p className="text-3xl text-white">{hasData ? displayMetrics.emotion.label : '--'}</p>
                 </div>
                 <div className="text-right">
                   <p className="text-gray-400 text-sm">Confidence</p>
-                  <p className="text-2xl text-cyan-400 font-mono">{toPercent(displayMetrics.emotion.confidence)}%</p>
+                  <p className="text-2xl text-cyan-400 font-mono">{hasData ? `${toPercent(displayMetrics.emotion.confidence)}%` : '--%'}</p>
                 </div>
-              </div>
-              <div className="space-y-3">
-                {emotionScores.map((score) => (
-                  <div key={score.label}>
-                    <div className="flex justify-between text-xs text-gray-400 mb-1">
-                      <span>{score.label}</span>
-                      <span className="font-mono">{score.value}%</span>
-                    </div>
-                    <div className="h-2 bg-[#2a2a3e] rounded-full overflow-hidden">
-                      <div className="h-full bg-cyan-400" style={{ width: `${score.value}%` }}></div>
-                    </div>
-                  </div>
-                ))}
               </div>
             </div>
 
@@ -617,12 +573,12 @@ export function DashboardScreen({
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <p className="text-gray-400 text-sm">Presence</p>
-                  <p className="text-2xl text-white">{displayMetrics.identity.samePerson ? 'Same face' : 'Drift detected'}</p>
+                  <p className="text-2xl text-white">{hasData ? (displayMetrics.identity.samePerson ? 'Same face' : 'Drift detected') : '--'}</p>
                 </div>
                 <div className="text-right">
                   <p className="text-gray-400 text-sm">Risk</p>
-                  <p className={`text-2xl ${getRiskColor(displayMetrics.identity.riskLevel)}`}>
-                    {displayMetrics.identity.riskLevel}
+                  <p className={`text-2xl ${hasData ? getRiskColor(displayMetrics.identity.riskLevel) : 'text-gray-500'}`}>
+                    {hasData ? displayMetrics.identity.riskLevel : '--'}
                   </p>
                 </div>
               </div>
@@ -656,16 +612,16 @@ export function DashboardScreen({
                   <div className="flex items-center justify-between mb-4">
                     <div>
                       <p className="text-gray-400 text-sm">Authenticity Score</p>
-                      <p className="text-3xl text-white font-mono">{toPercent(displayMetrics.deepfake.authenticityScore)}%</p>
+                      <p className="text-3xl text-white font-mono">{hasData ? `${toPercent(displayMetrics.deepfake.authenticityScore)}%` : '--%'}</p>
                     </div>
                     <div className="text-right">
                       <p className="text-gray-400 text-sm">Risk</p>
-                      <p className={`text-2xl ${getRiskColor(displayMetrics.deepfake.riskLevel)}`}>
-                        {displayMetrics.deepfake.riskLevel}
+                      <p className={`text-2xl ${hasData ? getRiskColor(displayMetrics.deepfake.riskLevel) : 'text-gray-500'}`}>
+                        {hasData ? displayMetrics.deepfake.riskLevel : '--'}
                       </p>
                     </div>
                   </div>
-                  <p className="text-gray-500 text-xs mb-3">{displayMetrics.deepfake.model}</p>
+                  {hasData && displayMetrics.deepfake.model && <p className="text-gray-500 text-xs mb-3">{displayMetrics.deepfake.model}</p>}
                   <div className="h-2 bg-[#2a2a3e] rounded-full overflow-hidden">
                     <div
                       className={`h-full ${displayMetrics.deepfake.riskLevel === 'high' ? 'bg-red-400' : displayMetrics.deepfake.riskLevel === 'medium' ? 'bg-yellow-400' : 'bg-cyan-400'}`}
