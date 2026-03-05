@@ -15,16 +15,16 @@ const log = require("./logger");
 
 const THRESHOLDS = {
   deepfake: {
-    medium: 0.85, // authenticityScore <= this → medium risk
-    high: 0.70,   // authenticityScore <= this → high risk
+    medium: 0.70, // authenticityScore <= this → medium risk
+    high: 0.45,   // authenticityScore <= this → high risk
   },
   identity: {
     medium: 0.20, // embeddingShift >= this → medium risk
     high: 0.40,   // embeddingShift >= this → high risk
   },
   emotion: {
-    angerMedium: 0.50,
-    angerHigh: 0.70,
+    angerMedium: 0.75,
+    angerHigh: 0.85,
   },
 };
 
