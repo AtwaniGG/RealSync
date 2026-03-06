@@ -12,6 +12,7 @@ import datetime
 import re
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
 import cv2
@@ -305,11 +306,16 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
     for face_info in faces:
         crop = face_info["crop"]
         face_id = face_info["face_id"]
+        deepfake_crop = face_info.get("crop_original", crop)
 
-        # H11: Use original-size crop for deepfake — EfficientNet resizes to 380 in one step
-        deepfake_result = analyze_deepfake(face_info.get("crop_original", crop))
-        emotion_result = analyze_emotion(crop)
-        identity_result = analyze_identity(session_id, face_id, crop)
+        # Run deepfake, emotion, identity in parallel (independent models)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            df_future = pool.submit(analyze_deepfake, deepfake_crop)
+            em_future = pool.submit(analyze_emotion, crop)
+            id_future = pool.submit(analyze_identity, session_id, face_id, crop)
+            deepfake_result = df_future.result()
+            emotion_result = em_future.result()
+            identity_result = id_future.result()
 
         face_results.append({
             "faceId": face_id,
@@ -337,7 +343,8 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
     behavior_conf = round(BEHAVIOR_BASELINE_SCALE * (1.0 + emotion_conf), 4)
 
     # Weighted trust (video + identity + behavior) — no audio on AI side
-    identity_signal = 1.0 - shift
+    # Dampen identity drift when multiple faces detected (expected switching)
+    identity_signal = max(0.7, 1.0 - shift) if len(faces) > 1 else 1.0 - shift
     trust_score = round(
         TRUST_WEIGHT_VIDEO * effective_auth + TRUST_WEIGHT_IDENTITY * identity_signal + TRUST_WEIGHT_BEHAVIOR * behavior_conf,
         4,

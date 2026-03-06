@@ -80,15 +80,19 @@ def get_deepfake_model():
                 state = torch.load(EFFICIENTNET_WEIGHTS_PATH, map_location="cpu", weights_only=True)
                 state_dict = state.get("model_state_dict", state)
                 net.load_state_dict(state_dict)
-                print(f"[deepfake] Loaded SBI weights from {EFFICIENTNET_WEIGHTS_PATH}")
+                print("[deepfake] Loaded SBI weights from " + EFFICIENTNET_WEIGHTS_PATH)
             else:
-                print(f"[deepfake] WARNING: SBI weights not found at {EFFICIENTNET_WEIGHTS_PATH}")
-                print("[deepfake] Model unavailable — will return None for predictions")
+                print("[deepfake] WARNING: SBI weights not found at " + EFFICIENTNET_WEIGHTS_PATH)
                 _model = None
                 return _model
 
-            net.eval()
+            # Use MPS (Apple Silicon GPU) if available for faster inference
+            _device = "mps" if torch.backends.mps.is_available() else "cpu"
+            net = net.to(_device)
+            net.train(False)
+            net._device = _device
             _model = net
+            print("[deepfake] Using device: " + _device)
             print(f"[deepfake] {MODEL_NAME} model ready")
         except Exception as exc:
             print(f"[deepfake] Failed to load model: {exc}")
@@ -112,7 +116,8 @@ def predict_deepfake(face_crop_bgr: np.ndarray) -> dict:
 
     try:
         face_rgb = cv2.cvtColor(face_crop_bgr, cv2.COLOR_BGR2RGB)
-        tensor = _preprocess(face_rgb).unsqueeze(0)  # (1, 3, 380, 380)
+        device = getattr(model, '_device', 'cpu')
+        tensor = _preprocess(face_rgb).unsqueeze(0).to(device)
 
         with torch.no_grad():
             raw = model(tensor)  # (1, 1)
@@ -133,11 +138,11 @@ def predict_deepfake(face_crop_bgr: np.ndarray) -> dict:
 
         # Sigmoid rescale: stretches the useful range for compressed video
         import math
-        # Center at 0.03 (midpoint of Zoom real-face range 0.005–0.12), steepness 40
-        calibrated = 1.0 / (1.0 + math.exp(-40 * (raw_authenticity - 0.03)))
-        # Scale to [0.55, 0.95] range — real faces through Zoom land 0.65–0.92,
-        # genuine deepfakes (raw < 0.005) still drop below 0.60
-        calibrated = 0.55 + calibrated * 0.40
+        # Observed Zoom real-face raw_auth: 0.0001–0.002 (most frames)
+        # Center at 0.0008, steepness 800 to resolve this narrow range
+        calibrated = 1.0 / (1.0 + math.exp(-800 * (raw_authenticity - 0.0008)))
+        # Scale to [0.65, 0.95] — real Zoom faces land 0.75–0.87
+        calibrated = 0.65 + calibrated * 0.30
 
         print(f"[deepfake] raw_prediction={prediction:.4f} raw_auth={raw_authenticity:.4f} calibrated={calibrated:.4f}")
         authenticity = round(max(0.0, min(1.0, calibrated)), 4)

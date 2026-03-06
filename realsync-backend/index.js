@@ -814,6 +814,25 @@ wssIngest.on("connection", async (socket, req) => {
       return;
     }
 
+    // Bot fallback notification — real bot failed, now using stub
+    if (message.type === "bot_fallback") {
+      log.warn("ingest", `Bot fallback for session ${session.id}: ${message.reason} — ${message.message}`);
+      session.source = "simulated";
+      broadcastToSession(session.id, {
+        type: "alert",
+        alertId: `bot-fallback-${Date.now()}`,
+        severity: "high",
+        category: "system",
+        title: "Bot Connection Failed",
+        message: message.message || "Real bot could not join. Using simulated data — captions and analysis are NOT from the actual meeting.",
+        recommendation: "Check the Zoom meeting URL and try again.",
+        source: "system",
+        ts: message.ts || makeIso(),
+        sessionId: session.id,
+      });
+      return;
+    }
+
     // Source status heartbeat from bot adapter
     if (message.type === "source_status") {
       session.botStatus = message.status || "connected";
@@ -872,6 +891,7 @@ async function handleFrame(session, message) {
     // also triggers noFaceDetected but needs special audio-only trust handling.
     if (result?.aggregated?.cameraOff === true) {
       session.metrics.cameraOff = true;
+      session._faceRecoveryCount = 0;  // Reset hysteresis counter
       session.metrics.confidenceLayers = session.metrics.confidenceLayers || {};
       session.metrics.confidenceLayers.video = null;
       const audioScore = session.audioAuthenticityScore;
@@ -887,19 +907,52 @@ async function handleFrame(session, message) {
     if (result.aggregated.noFaceDetected) return;
 
     // Update session metrics from AI response
+    const isMock = result.source === "mock";
     session.metrics = {
       ...result.aggregated,
       timestamp: result.processedAt || makeIso(),
-      source: result.source === "mock" ? "simulated" : "external",
+      source: isMock ? "simulated" : "external",
     };
-    session.source = (result.source === "mock") ? "simulated" : "external";
+    session.source = isMock ? "simulated" : "external";
+
+    // Alert frontend when AI service is down (throttle to once per 30s)
+    if (isMock && (!session._lastMockAlertAt || Date.now() - session._lastMockAlertAt > 30000)) {
+      session._lastMockAlertAt = Date.now();
+      broadcastToSession(session.id, {
+        type: "alert",
+        alertId: `ai-offline-${Date.now()}`,
+        severity: "high",
+        category: "system",
+        title: "AI Service Offline",
+        message: "The AI model server is unreachable. Displayed metrics are simulated and NOT real analysis. Start the AI service to get real results.",
+        recommendation: "Run the AI service: cd RealSync-AI-Prototype && python -m serve.app",
+        source: "system",
+        ts: makeIso(),
+        sessionId: session.id,
+      });
+    }
 
     // H7: Broadcast moved AFTER trust recomputation (below) so clients get audio-corrected trust
 
-    session.metrics.cameraOff = false;
+    // Hysteresis: require 3 consecutive face-frames before clearing cameraOff
+    if (session.metrics.cameraOff) {
+      session._faceRecoveryCount = (session._faceRecoveryCount || 0) + 1;
+      if (session._faceRecoveryCount < 3) {
+        // Don't flip cameraOff yet — wait for stable face detection
+      } else {
+        session.metrics.cameraOff = false;
+        session._faceRecoveryCount = 0;
+      }
+    } else {
+      session.metrics.cameraOff = false;
+      session._faceRecoveryCount = 0;
+    }
+
+    // Include which participant's face is being analyzed in the metrics
+    const primaryName = session.participants?.get(0)?.name || null;
+    session.metrics.analyzedParticipant = primaryName;
 
     // Evaluate visual alerts — primary face (face 0 / aggregated)
-    const primaryName = session.participants?.get(0)?.name || null;
     const visualAlerts = session.alertFusion.evaluateVisual(session, result, { faceId: 0, participantName: primaryName });
     visualAlerts.forEach((alert) => {
       alert.recommendation = getRecommendation(alert.category, alert.severity);
@@ -947,7 +1000,10 @@ async function handleFrame(session, message) {
       const audioScore = session.audioAuthenticityScore;
       const behaviorConf = result.aggregated.confidenceLayers?.behavior || 0.55;
       const identityShift = result.aggregated.identity?.embeddingShift || 0;
-      const identitySignal = 1.0 - identityShift;
+      // Dampen identity drift impact when multiple participants are detected
+      // (face switching between participants causes expected high drift)
+      const rawFaceCount = result.aggregated.faceCount || session.metrics?.faceCount || 1;
+      const identitySignal = rawFaceCount > 1 ? Math.max(0.7, 1.0 - identityShift) : 1.0 - identityShift;
 
       let finalTrust;
       if (AUDIO_DEEPFAKE_ENABLED && audioScore != null) {

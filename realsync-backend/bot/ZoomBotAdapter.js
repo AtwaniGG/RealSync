@@ -29,7 +29,7 @@ const JOIN_TIMEOUT_MS = 60_000; // 60s to get into the meeting
 const FRAME_INTERVAL_MS = 2000; // 1 frame every 2s (0.5 FPS)
 const CAPTION_POLL_MS = 1000; // check captions every 1s
 const AUDIO_CHUNK_MS = 500; // send audio chunks every 500ms
-const VIEWPORT = { width: 1280, height: 720 };
+const VIEWPORT = { width: 1920, height: 1080 };
 
 // Debug screenshots directory (only used when DEBUG_SCREENSHOTS=true)
 const SCREENSHOTS_DIR = path.join(__dirname, "screenshots");
@@ -64,7 +64,7 @@ class ZoomBotAdapter {
     this.meetingUrl = meetingUrl;
     this.displayName = displayName || DEFAULT_DISPLAY_NAME;
     this.onIngestMessage = onIngestMessage;
-    this.headless = headless !== undefined ? headless : true;
+    this.headless = headless !== undefined ? headless : (process.env.BOT_HEADLESS !== 'false');
     this.debugScreenshots = debugScreenshots || process.env.DEBUG_SCREENSHOTS === "true";
 
     this.browser = null;
@@ -205,6 +205,11 @@ class ZoomBotAdapter {
 
       // Dismiss Zoom popup dialogs that overlay the video
       await this._dismissZoomPopups();
+
+      if (this._stopped) { await this._cleanup(); return; }
+
+      // Hide the bot's own video tile so screenshots only contain other participants
+      await this._hideSelfView();
 
       if (this._stopped) { await this._cleanup(); return; }
 
@@ -996,6 +1001,78 @@ class ZoomBotAdapter {
   }
 
   /**
+   * Hide the bot's own video tile ("Hide Self View") so screenshots
+   * only contain other participants' faces. Works in both gallery and
+   * speaker view. Falls back gracefully — capture still works if this fails.
+   */
+  async _hideSelfView() {
+    try {
+      log.info("zoomBot", "Attempting to hide self-view...");
+      await sleep(1000);
+
+      const hidden = await this.page.evaluate(() => {
+        // Strategy 1: Right-click on the bot's own video tile to get context menu
+        // Zoom Web SDK labels the self-view tile with the user's name or "You"
+        const tiles = Array.from(document.querySelectorAll(
+          '[class*="video-avatar"], [class*="participant-tile"], [class*="gallery-video-container"]'
+        ));
+
+        // Strategy 2: Use the View menu / "Hide Self View" option
+        // Try clicking View button in the toolbar
+        const viewBtns = Array.from(document.querySelectorAll("button"));
+        for (const btn of viewBtns) {
+          const text = (btn.textContent || "").trim().toLowerCase();
+          if (text === "view") {
+            btn.click();
+            // Look for "Hide Self View" menu item after a tick
+            return "clicked-view";
+          }
+        }
+
+        // Strategy 3: CSS-based hiding — find and hide the self-view container
+        // The self-view tile often has a "mute" indicator or the bot's own name
+        const selfIndicators = document.querySelectorAll(
+          '[class*="self-video"], [class*="active-speaker-myself"], [data-self="true"]'
+        );
+        for (const el of selfIndicators) {
+          const tile = el.closest('[class*="video"]') || el.parentElement;
+          if (tile) {
+            tile.style.display = "none";
+            return "css-hidden";
+          }
+        }
+
+        return "no-match";
+      });
+
+      if (hidden === "clicked-view") {
+        // Wait for menu to appear, then click "Hide Self View"
+        await sleep(500);
+        const menuClicked = await this.page.evaluate(() => {
+          const items = Array.from(document.querySelectorAll(
+            '[role="menuitem"], [role="option"], li, a, button, span'
+          ));
+          for (const item of items) {
+            const text = (item.textContent || "").trim().toLowerCase();
+            if (text.includes("hide self view") || text.includes("hide self")) {
+              item.click();
+              return true;
+            }
+          }
+          // Close the menu if we didn't find the option
+          document.body.click();
+          return false;
+        });
+        log.info("zoomBot", menuClicked ? "Self-view hidden via View menu." : "Hide Self View option not found in menu.");
+      } else {
+        log.info("zoomBot", `Self-view hide result: ${hidden}`);
+      }
+    } catch (err) {
+      log.warn("zoomBot", `Hide self-view failed (non-fatal): ${err.message}`);
+    }
+  }
+
+  /**
    * Try to enable Zoom's built-in closed captions / live transcript.
    */
   async _enableClosedCaptions() {
@@ -1088,7 +1165,7 @@ class ZoomBotAdapter {
         const screenshot = await this.page.screenshot({
           encoding: "base64",
           type: "jpeg",
-          quality: 70,
+          quality: 95,
         });
 
         this.onIngestMessage({
@@ -1504,43 +1581,40 @@ class ZoomBotAdapter {
     }
     this._audioCapturing = false;
 
-    // Try to click "Leave Meeting" in Zoom
+    // Try to click "Leave Meeting" in Zoom (best-effort, don't wait long)
     try {
       if (this.page && !this.page.isClosed()) {
-        // Find leave button
-        const leaveBtn = await this.page.$(
-          [
-            'button[aria-label*="Leave" i]',
-            ".footer__leave-btn",
-            '[data-type="Leave"]',
-          ].join(", ")
-        );
+        const leaveBtn = await Promise.race([
+          this.page.$(
+            [
+              'button[aria-label*="Leave" i]',
+              ".footer__leave-btn",
+              '[data-type="Leave"]',
+              'button[aria-label*="leave" i]',
+            ].join(", ")
+          ),
+          sleep(2000).then(() => null),
+        ]);
 
         if (leaveBtn) {
           await leaveBtn.click();
-          await sleep(1000);
-
-          // Confirm leave
-          const confirmClicked = await this.page.evaluate(() => {
+          await sleep(500);
+          // Confirm leave dialog
+          await this.page.evaluate(() => {
             const buttons = Array.from(document.querySelectorAll("button"));
             for (const btn of buttons) {
               const text = btn.textContent?.trim().toLowerCase() || "";
               if (text.includes("leave meeting") || text === "leave") {
                 btn.click();
-                return true;
+                return;
               }
             }
-            return false;
-          });
-
-          if (confirmClicked) {
-            log.info("zoomBot", "Confirmed leave meeting.");
-            await sleep(1000);
-          }
+          }).catch(() => {});
+          await sleep(500);
         }
       }
     } catch {
-      // Best effort
+      // Best effort — browser.close() below will force-disconnect anyway
     }
 
     // Notify: disconnected

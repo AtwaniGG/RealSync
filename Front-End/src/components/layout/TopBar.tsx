@@ -31,7 +31,8 @@ export function TopBar({ title, onSignOut, onNavigate, profilePhoto, userName, u
         {activeSessionId ? (
           <Button
             size="sm"
-            className="bg-red-600 hover:bg-red-700 text-white px-4 py-2"
+            variant="destructive"
+            className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 cursor-pointer"
             onClick={onEndSession}
           >
             <PhoneOff className="w-4 h-4 mr-2" />

@@ -16,6 +16,12 @@ const { getClient } = require("./supabaseClient");
  * Supabase is not configured (prototype mode).
  */
 async function authenticate(req, res, next) {
+  // Health endpoint is always public (needed by load balancers, start.sh, monitoring)
+  if (req.path === "/api/health") {
+    req.userId = null;
+    return next();
+  }
+
   const client = getClient();
 
   // Prototype mode — no Supabase configured, allow all
