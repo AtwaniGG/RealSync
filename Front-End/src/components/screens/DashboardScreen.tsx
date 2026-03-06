@@ -77,6 +77,7 @@ type Metrics = {
   };
   cameraOff?: boolean;
   faceCount?: number;
+  analyzedParticipant?: string | null;
 };
 
 // H16: Function instead of constant so timestamp is always fresh
@@ -302,17 +303,6 @@ export function DashboardScreen({
   const sourceLabel = !hasData ? 'waiting' : displayMetrics.source === 'external' ? 'model server' : 'simulated';
   const connectionLabel = wsConnected ? 'live' : 'polling';
 
-  const emotionScores = useMemo(() => {
-    if (!hasData) return [];
-    const scores = displayMetrics.emotion?.scores;
-    if (!scores || typeof scores !== 'object') return [];
-    const entries = Object.entries(scores) as Array<[EmotionLabel, number]>;
-    return entries
-      .map(([label, value]) => ({ label, value: toPercent(value) }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 3);
-  }, [displayMetrics, hasData]);
-
   const alerts = useMemo(() => {
     const items: Array<{ id: string; type: 'error' | 'warning' | 'ok'; message: string; time: string }> = [];
 
@@ -395,6 +385,17 @@ export function DashboardScreen({
         <TopBar title="Dashboard" onSignOut={onSignOut} onNavigate={onNavigate} profilePhoto={profilePhoto} userName={userName} userEmail={userEmail} isConnected={wsConnected} activeSessionId={sessionId} onNewSession={onNewSession} onEndSession={handleEndSession} />
 
         <div className="flex-1 overflow-y-auto p-8 bg-[#0a0a16]">
+          {/* Prominent warning when metrics are simulated */}
+          {hasData && displayMetrics.source !== 'external' && (
+            <div className="mb-4 px-4 py-3 bg-red-900/40 border border-red-500/60 rounded-lg flex items-center gap-3">
+              <span className="text-red-400 text-lg font-bold flex-shrink-0">!</span>
+              <div>
+                <p className="text-red-300 text-sm font-semibold">AI Service Offline — Metrics Are Simulated</p>
+                <p className="text-red-400/70 text-xs">The displayed scores are NOT real analysis. Start the AI service to get real deepfake detection and emotion analysis.</p>
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-3 gap-6">
             {/* Live Trust Score */}
             <div className="bg-[#1a1a2e] rounded-xl p-6 border border-gray-800">
@@ -439,7 +440,7 @@ export function DashboardScreen({
               </div>
 
               <p className="text-center text-gray-400 text-sm">Real-time Authenticity</p>
-              <p className="text-center text-gray-500 text-xs mt-2">
+              <p className={`text-center text-xs mt-2 ${sourceLabel === 'simulated' ? 'text-red-400 font-semibold' : 'text-gray-500'}`}>
                 {metricsError
                   ? 'Backend offline • showing last known values'
                   : `Updated ${lastUpdatedLabel} • ${sourceLabel} • ${connectionLabel}`}
@@ -555,10 +556,13 @@ export function DashboardScreen({
             {/* Facial Emotion Recognition */}
             <div className="bg-[#1a1a2e] rounded-xl p-6 border border-gray-800">
               <h3 className="text-white text-lg mb-4">Facial Emotion Recognition</h3>
+              {hasData && displayMetrics.analyzedParticipant && (
+                <p className="text-cyan-400 text-xs mb-2">Analyzing: {displayMetrics.analyzedParticipant}</p>
+              )}
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <p className="text-gray-400 text-sm">Live Emotion</p>
-                  <p className="text-3xl text-white">{hasData ? displayMetrics.emotion.label : '--'}</p>
+                  <p className="text-3xl text-white">{hasData ? (displayMetrics.emotion.confidence < 0.40 ? 'Neutral' : displayMetrics.emotion.label) : '--'}</p>
                 </div>
                 <div className="text-right">
                   <p className="text-gray-400 text-sm">Confidence</p>
@@ -570,15 +574,28 @@ export function DashboardScreen({
             {/* Face Presence & Identity Consistency */}
             <div className="bg-[#1a1a2e] rounded-xl p-6 border border-gray-800">
               <h3 className="text-white text-lg mb-4">Identity Consistency</h3>
+              {hasData && displayMetrics.analyzedParticipant && (
+                <p className="text-cyan-400 text-xs mb-2">Analyzing: {displayMetrics.analyzedParticipant}</p>
+              )}
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <p className="text-gray-400 text-sm">Presence</p>
-                  <p className="text-2xl text-white">{hasData ? (displayMetrics.identity.samePerson ? 'Same face' : 'Drift detected') : '--'}</p>
+                  <p className="text-2xl text-white">{hasData ? (
+                    (displayMetrics.faceCount || 0) > 1
+                      ? 'Multiple faces'
+                      : displayMetrics.identity.samePerson ? 'Same face' : 'Drift detected'
+                  ) : '--'}</p>
                 </div>
                 <div className="text-right">
                   <p className="text-gray-400 text-sm">Risk</p>
-                  <p className={`text-2xl ${hasData ? getRiskColor(displayMetrics.identity.riskLevel) : 'text-gray-500'}`}>
-                    {hasData ? displayMetrics.identity.riskLevel : '--'}
+                  <p className={`text-2xl ${hasData ? (
+                    (displayMetrics.faceCount || 0) > 1
+                      ? 'text-blue-400'
+                      : getRiskColor(displayMetrics.identity.riskLevel)
+                  ) : 'text-gray-500'}`}>
+                    {hasData ? (
+                      (displayMetrics.faceCount || 0) > 1 ? 'expected' : displayMetrics.identity.riskLevel
+                    ) : '--'}
                   </p>
                 </div>
               </div>
@@ -599,6 +616,9 @@ export function DashboardScreen({
             {/* Deepfake / Visual Manipulation Detection */}
             <div className="bg-[#1a1a2e] rounded-xl p-6 border border-gray-800">
               <h3 className="text-white text-lg mb-4">Visual Manipulation Detection</h3>
+              {hasData && !displayMetrics.cameraOff && displayMetrics.analyzedParticipant && (
+                <p className="text-cyan-400 text-xs mb-2">Analyzing: {displayMetrics.analyzedParticipant}</p>
+              )}
               {displayMetrics.cameraOff ? (
                 <div className="flex flex-col items-center justify-center py-6 text-center">
                   <div className="w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center mb-3">

@@ -207,7 +207,91 @@ gunicorn serve.app:app -w 2 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:5100
 
 ---
 
-## 6. Post-Deployment Checklist
+## 6. Audio Capture in Production (Xvfb + PulseAudio)
+
+The Zoom bot captures video frames via Puppeteer screenshots, but **audio capture requires a virtual display and audio sink** when running on a headless server (no monitor/speakers).
+
+### Why This Is Needed
+
+Headless Chromium has no audio output device. Zoom's WebRTC audio has nowhere to route, so the bot's AudioContext hooks never fire. The solution: run Puppeteer in **non-headless mode** against a virtual display (Xvfb) with a virtual audio sink (PulseAudio).
+
+The browser thinks it has a real screen and speakers — but everything is virtual. No physical display needed.
+
+### Setup on AWS EC2 / Linux Server
+
+```bash
+# Install dependencies
+sudo apt-get update
+sudo apt-get install -y xvfb pulseaudio
+
+# Start PulseAudio with virtual sink (run as your app user, not root)
+pulseaudio --start --exit-idle-time=-1
+pactl load-module module-null-sink sink_name=virtual_speaker sink_properties=device.description="Virtual_Speaker"
+pactl set-default-sink virtual_speaker
+
+# Start Xvfb (virtual display)
+Xvfb :99 -screen 0 1920x1080x24 &
+export DISPLAY=:99
+
+# Now start the backend — Puppeteer launches non-headless against the virtual display
+cd realsync-backend
+DISPLAY=:99 npm start
+```
+
+### Puppeteer Config Change
+
+In `ZoomBotAdapter.js`, change the browser launch to non-headless when the `DISPLAY` env var is set:
+
+```javascript
+const browser = await puppeteer.launch({
+  headless: process.env.DISPLAY ? false : 'new',  // non-headless when virtual display available
+  args: [
+    '--no-sandbox',
+    '--use-fake-ui-for-media-stream',
+    '--auto-accept-camera-and-microphone-capture',
+    // ... existing args
+  ],
+});
+```
+
+### Docker Setup
+
+Add to the backend `Dockerfile`:
+
+```dockerfile
+RUN apt-get update && apt-get install -y xvfb pulseaudio && rm -rf /var/lib/apt/lists/*
+```
+
+Update the entrypoint to start virtual display + audio before the app:
+
+```bash
+#!/bin/bash
+pulseaudio --start --exit-idle-time=-1
+pactl load-module module-null-sink sink_name=virtual_speaker
+pactl set-default-sink virtual_speaker
+Xvfb :99 -screen 0 1920x1080x24 &
+export DISPLAY=:99
+exec node index.js
+```
+
+### Verification
+
+Once running with Xvfb + PulseAudio:
+- The existing audio capture code in `ZoomBotAdapter.js` (lines 1358–1538) will work — no code changes needed
+- Audio chunks will flow through the pipeline: ZoomBot → Backend → AI Service → AASIST model
+- Check backend logs for `[audio_pcm]` messages to confirm audio is being captured
+- Check AI service logs for `/api/analyze/audio` requests
+
+### Resource Impact
+
+- **Xvfb**: ~50MB RAM, negligible CPU
+- **PulseAudio**: ~20MB RAM, negligible CPU
+- **Non-headless Chromium**: ~100MB more RAM than headless (renders to virtual framebuffer)
+- Total overhead: ~170MB additional RAM per server
+
+---
+
+## 7. Post-Deployment Checklist
 
 After deploying all three services:
 

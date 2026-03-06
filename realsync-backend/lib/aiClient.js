@@ -140,16 +140,21 @@ async function analyzeFrame({ sessionId, frameB64, capturedAt }) {
     });
 
     if (!res.ok) {
-      log.warn("aiClient", `AI service responded ${res.status} — returning mock.`);
+      if (res.status === 429) {
+        // AI service is busy processing another frame — skip this one silently
+        log.debug("aiClient", "AI service busy (429) — skipping frame");
+        return null;
+      }
+      log.error("aiClient", `AI service responded ${res.status} — returning mock. Start AI service on ${AI_SERVICE_URL}`);
       return generateMockResponse(sessionId, capturedAt);
     }
 
     return await res.json();
   } catch (err) {
     if (err?.name === "AbortError") {
-      log.warn("aiClient", "AI service timed out — returning mock.");
+      log.error("aiClient", `AI service timed out (${ANALYZE_TIMEOUT_MS}ms) — returning mock.`);
     } else {
-      log.warn("aiClient", `AI service unreachable (${err?.message ?? err}) — returning mock.`);
+      log.error("aiClient", `AI service unreachable at ${AI_SERVICE_URL} (${err?.message ?? err}) — returning mock. Is the AI service running?`);
     }
     return generateMockResponse(sessionId, capturedAt);
   } finally {

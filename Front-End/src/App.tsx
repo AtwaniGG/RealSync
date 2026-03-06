@@ -263,8 +263,8 @@ export default function App() {
 
       {/* Bot Connecting Loading Screen */}
       {botConnecting && (
-        <div className="fixed inset-0 z-[999] flex items-center justify-center bg-[#0a0a14]/95 backdrop-blur-sm">
-          <div className="flex flex-col items-center gap-6 max-w-md text-center px-6">
+        <div className="fixed inset-0 z-[999] flex items-center justify-center bg-[#0a0a14]/90 backdrop-blur-md">
+          <div className="flex flex-col items-center gap-6 max-w-md text-center px-8 py-10 bg-[#1a1a2e] rounded-2xl border border-gray-700/50 shadow-2xl">
             {/* Animated eye logo */}
             <div className="relative">
               <div className="w-24 h-24 rounded-full border-2 border-cyan-400/30 flex items-center justify-center">

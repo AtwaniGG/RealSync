@@ -134,3 +134,29 @@
   - CRIT-3: `models.mobilenet_v2(weights=None)` flagged as "blank weights" — intentional; full checkpoint loaded from file
   - HIGH-1: WebSocket auth race condition — message handler was registered AFTER `await` completed
 - **Rule**: Always read the actual code before implementing a fix. Audit reports can be wrong. Verify each issue independently.
+
+## Session: 2026-03-06
+
+### 20. AI inference timeout — profile before increasing
+- **Mistake**: Set AI_TIMEOUT_MS=5000 which is too short for EfficientNet-B4+B2+FaceNet on CPU (takes 7-10s). Backend silently fell back to mock data.
+- **Rule**: Always profile real inference time before setting timeouts. EfficientNet models on CPU are slow; use MPS on Apple Silicon for 10-45x speedup.
+
+### 21. Bot join timeout must exceed actual join time
+- **Mistake**: JOIN_TIMEOUT_MS=90s but Puppeteer+Zoom page load+audio setup takes ~93s. Timeout fired 3s early, triggered stub fallback while real bot was still joining.
+- **Rule**: Measure actual bot join time and set timeout with 50%+ margin. Also set `bot.cancelled = true` on timeout to prevent race with .then() handler.
+
+### 22. Frame pile-up kills the AI service
+- **Mistake**: Frames arrive every 2s, inference takes 7s on CPU. FastAPI threadpool queued hundreds of frames, each spawning new MediaPipe instances, causing 16-minute backlog.
+- **Rule**: Use a semaphore to limit concurrent frame analyses. Return 429 when busy. Backend should skip (not mock) on 429.
+
+### 23. Use MPS for PyTorch inference on Apple Silicon
+- **Fix**: Added `model.to("mps")` + `tensor.to(device)` for deepfake and emotion models. Inference: 7000ms → 150-770ms.
+- **Rule**: Always check `torch.backends.mps.is_available()` and use MPS for local inference. Note: Railway (production) is CPU-only.
+
+### 24. Parallelize independent model calls
+- **Fix**: Used ThreadPoolExecutor(3) to run deepfake, emotion, identity analysis concurrently instead of sequentially.
+- **Rule**: When models are independent (same input, no shared state), run them in parallel.
+
+### 25. Python stdout buffering hides training logs
+- **Mistake**: `python script.py > log.file 2>&1` buffers stdout. Log file appears empty for minutes.
+- **Rule**: Use `PYTHONUNBUFFERED=1 python ...` or `python -u ...` when redirecting output to files for real-time monitoring.

@@ -140,11 +140,11 @@ function startStubBot({ sessionId, meetingUrl, displayName, onIngestMessage }) {
     if (bot.status === "joining") {
       bot.status = "connected";
 
-      // Notify: streams active
+      // Notify: streams active (stub mode — no real audio/captions)
       onIngestMessage({
         type: "source_status",
         status: "connected",
-        streams: { audio: true, video: true, captions: true },
+        streams: { audio: false, video: true, captions: false },
         ts: new Date().toISOString(),
       });
 
@@ -180,7 +180,7 @@ function startStubBot({ sessionId, meetingUrl, displayName, onIngestMessage }) {
 /*  Real Puppeteer bot implementation                                  */
 /* ------------------------------------------------------------------ */
 
-const JOIN_TIMEOUT_MS = 90_000;  // 90 seconds max for a join attempt
+const JOIN_TIMEOUT_MS = 150_000;  // 150 seconds — Puppeteer launch + Zoom load + audio setup can take 90-120s
 const MAX_JOIN_RETRIES = 2;
 
 async function startRealBot({ sessionId, meetingUrl, displayName, onIngestMessage }) {
@@ -214,8 +214,15 @@ async function startRealBot({ sessionId, meetingUrl, displayName, onIngestMessag
       if (bot.status === "joining" && !bot.cancelled) {
         log.warn("botManager", `Join timed out for ${sessionId} (attempt ${retryCount + 1}) — falling back to stub`);
         bot.status = "disconnected";
+        bot.cancelled = true;
         adapter.leave().catch(() => {});
         bots.delete(sessionId);
+        onIngestMessage({
+          type: "bot_fallback",
+          reason: "join_timeout",
+          message: "Real bot join timed out. Using simulated data — captions and frames are NOT from the actual meeting.",
+          ts: new Date().toISOString(),
+        });
         startStubBot({ sessionId, meetingUrl, displayName, onIngestMessage });
       }
     }, JOIN_TIMEOUT_MS);
@@ -254,6 +261,12 @@ async function startRealBot({ sessionId, meetingUrl, displayName, onIngestMessag
         if (bots.has(sessionId)) {
           bots.delete(sessionId);
           log.info("botManager", "All retries exhausted, falling back to stub bot...");
+          onIngestMessage({
+            type: "bot_fallback",
+            reason: "join_failed",
+            message: `Real bot failed after ${MAX_JOIN_RETRIES + 1} attempts: ${err.message}. Using simulated data.`,
+            ts: new Date().toISOString(),
+          });
           startStubBot({ sessionId, meetingUrl, displayName, onIngestMessage });
         }
       });
