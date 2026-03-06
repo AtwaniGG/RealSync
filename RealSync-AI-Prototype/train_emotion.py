@@ -7,6 +7,8 @@ Usage:
     python train_emotion.py --fer-only          # train on FER2013 only (quick test)
     python train_emotion.py --epochs 30         # custom epoch count
     python train_emotion.py --batch-size 16     # smaller batch for low RAM
+    python train_emotion.py --resume-from src/models/emotion_weights.pth --epochs 20
+    python train_emotion.py --no-zoom-augment   # disable compression augmentation
 
 Expects data at:
     data/fer2013/train/       (FER2013 images sorted by emotion folder)
@@ -17,20 +19,25 @@ Expects data at:
 Outputs:
     src/models/emotion_weights.pth
 
-Fine-tunes MobileNetV2 (pretrained on ImageNet) for 7-class emotion
+Fine-tunes EfficientNet-B2 (pretrained on ImageNet) for 7-class emotion
 classification. Optimized for Apple Silicon M2 with 8GB RAM.
+
+Backbone options: efficientnet_b2 (default, best accuracy), efficientnet_b0,
+mobilenetv2 (legacy). Input size: 224x224 (default) or 128 for legacy.
 """
 
+import io
 import os
 import argparse
 import gc
+import random
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torchvision import transforms, models
-from PIL import Image
+from PIL import Image, ImageFilter
 from sklearn.metrics import accuracy_score, classification_report
 
 # Paths
@@ -58,27 +65,95 @@ AFFECTNET_FOLDER_MAP = {
 }
 
 # Training config (optimized for M2 8GB)
-IMG_SIZE = 128
+IMG_SIZE = 224        # EfficientNet standard; was 128 for MobileNetV2
+BACKBONE = 'efficientnet_b2'  # efficientnet_b2 | efficientnet_b0 | mobilenetv2
 BATCH_SIZE = 16
 EPOCHS = 40
 LEARNING_RATE = 0.0001
 DEVICE = 'mps' if torch.backends.mps.is_available() else 'cpu'
 NUM_WORKERS = 2
 
+# Backbone → (feature_dim, torchvision_constructor, weights)
+BACKBONE_REGISTRY = {
+    'efficientnet_b2': (1408, models.efficientnet_b2, models.EfficientNet_B2_Weights.DEFAULT),
+    'efficientnet_b0': (1280, models.efficientnet_b0, models.EfficientNet_B0_Weights.DEFAULT),
+    'mobilenetv2':     (1280, models.mobilenet_v2,    models.MobileNet_V2_Weights.DEFAULT),
+}
 
-# Data augmentation (stronger augmentation for better generalization)
-train_transform = transforms.Compose([
-    transforms.Resize((IMG_SIZE + 16, IMG_SIZE + 16)),
-    transforms.RandomCrop(IMG_SIZE),
-    transforms.RandomHorizontalFlip(),
-    transforms.RandomRotation(15),
-    transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
-    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225]),
-    transforms.RandomErasing(p=0.15, scale=(0.02, 0.15)),
-])
+
+# --- Compression augmentation transforms (simulate Zoom video artifacts) ---
+
+class RandomJPEGCompression:
+    """Simulate JPEG compression artifacts (Zoom H.264 → JPEG decode)."""
+    def __init__(self, quality_range=(30, 85), p=0.6):
+        self.quality_range = quality_range
+        self.p = p
+
+    def __call__(self, img):
+        if random.random() > self.p:
+            return img
+        quality = random.randint(*self.quality_range)
+        buf = io.BytesIO()
+        img.save(buf, format='JPEG', quality=quality)
+        buf.seek(0)
+        return Image.open(buf).convert('RGB')
+
+
+class RandomGaussianBlur:
+    """Simulate codec smoothing / low-bitrate blur."""
+    def __init__(self, radius_range=(1, 3), p=0.4):
+        self.radius_range = radius_range
+        self.p = p
+
+    def __call__(self, img):
+        if random.random() > self.p:
+            return img
+        radius = random.uniform(*self.radius_range)
+        return img.filter(ImageFilter.GaussianBlur(radius=radius))
+
+
+class RandomDownscaleUpscale:
+    """Simulate low-resolution Zoom participant tiles."""
+    def __init__(self, scale_range=(0.5, 0.8), p=0.4):
+        self.scale_range = scale_range
+        self.p = p
+
+    def __call__(self, img):
+        if random.random() > self.p:
+            return img
+        w, h = img.size
+        scale = random.uniform(*self.scale_range)
+        small = img.resize((int(w * scale), int(h * scale)), Image.BILINEAR)
+        return small.resize((w, h), Image.BILINEAR)
+
+
+def build_train_transform(zoom_augment=True):
+    """Build training transform pipeline, optionally with compression augmentation."""
+    augmentations = [
+        transforms.Resize((IMG_SIZE + 16, IMG_SIZE + 16)),
+        transforms.RandomCrop(IMG_SIZE),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(15),
+        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
+        transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+    ]
+    if zoom_augment:
+        augmentations.extend([
+            RandomJPEGCompression(quality_range=(30, 85), p=0.6),
+            RandomGaussianBlur(radius_range=(1, 3), p=0.4),
+            RandomDownscaleUpscale(scale_range=(0.5, 0.8), p=0.4),
+        ])
+    augmentations.extend([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+        transforms.RandomErasing(p=0.15, scale=(0.02, 0.15)),
+    ])
+    return transforms.Compose(augmentations)
+
+
+# Default transform (with zoom augmentation)
+train_transform = build_train_transform(zoom_augment=True)
 
 val_transform = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
@@ -194,22 +269,30 @@ class AffectNetDataset(Dataset):
 
 
 class EmotionNet(nn.Module):
-    """MobileNetV2 fine-tuned for 7-class emotion classification."""
-    def __init__(self, num_classes=NUM_CLASSES):
+    """Configurable backbone for 7-class emotion classification."""
+    def __init__(self, num_classes=NUM_CLASSES, backbone_name=BACKBONE):
         super().__init__()
-        backbone = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
+        self.backbone_name = backbone_name
+        feat_dim, constructor, weights = BACKBONE_REGISTRY[backbone_name]
 
-        # Unfreeze more layers — only freeze first 10 (was 14)
-        # This lets the model learn more face-specific features
-        for param in backbone.features[:10].parameters():
-            param.requires_grad = False
+        backbone = constructor(weights=weights)
 
-        self.features = backbone.features
+        if backbone_name.startswith('efficientnet'):
+            self.features = backbone.features
+            # Freeze early layers (stages 0-3 of 8)
+            for param in list(self.features.parameters())[:len(list(self.features[:4].parameters()))]:
+                param.requires_grad = False
+        else:
+            # MobileNetV2
+            self.features = backbone.features
+            for param in backbone.features[:10].parameters():
+                param.requires_grad = False
+
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Dropout(0.4),
-            nn.Linear(1280, 256),
+            nn.Linear(feat_dim, 256),
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(256, num_classes),
@@ -238,12 +321,41 @@ def get_class_weights(dataset):
     return torch.tensor(weights, dtype=torch.float32)
 
 
+def mixup_data(x, y, alpha=0.2):
+    """Mixup augmentation: blend pairs of images and labels."""
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1.0
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size, device=x.device)
+    mixed_x = lam * x + (1 - lam) * x[index]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    """Compute loss for mixup-blended batch."""
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
+
 def train(args):
+    # Rebuild train transform based on --zoom-augment flag
+    global train_transform, IMG_SIZE
+    img_size = args.img_size
+    IMG_SIZE = img_size
+    train_transform = build_train_transform(zoom_augment=args.zoom_augment)
+
     print(f'=== Emotion Model Training ===')
+    print(f'Backbone: {args.backbone}')
     print(f'Device: {DEVICE}')
     print(f'Batch size: {args.batch_size}')
     print(f'Epochs: {args.epochs}')
-    print(f'Image size: {IMG_SIZE}x{IMG_SIZE}')
+    print(f'Image size: {img_size}x{img_size}')
+    print(f'Zoom augmentation: {args.zoom_augment}')
+    print(f'Mixup alpha: {args.mixup_alpha}')
+    if args.resume_from:
+        print(f'Resuming from: {args.resume_from}')
     print()
 
     # Load datasets
@@ -296,7 +408,21 @@ def train(args):
     )
 
     # Model
-    model = EmotionNet().to(DEVICE)
+    model = EmotionNet(backbone_name=args.backbone).to(DEVICE)
+
+    # Resume from existing checkpoint (warm start) — only if same backbone
+    if args.resume_from:
+        checkpoint = torch.load(args.resume_from, weights_only=False, map_location=DEVICE)
+        ckpt_backbone = checkpoint.get('backbone', 'mobilenetv2')
+        if ckpt_backbone == args.backbone:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            prev_acc = checkpoint.get('val_acc', 'unknown')
+            prev_epoch = checkpoint.get('epoch', 'unknown')
+            print(f'Loaded checkpoint: epoch {prev_epoch}, val_acc {prev_acc}')
+            print('Optimizer/scheduler reset for new augmentation regime.\n')
+        else:
+            print(f'Checkpoint backbone ({ckpt_backbone}) != current ({args.backbone}), training from scratch.\n')
+
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'Total params: {total_params:,} | Trainable: {trainable_params:,}\n')
@@ -321,12 +447,19 @@ def train(args):
         train_loss = 0.0
         train_preds, train_labels = [], []
 
+        use_mixup = args.mixup_alpha > 0
+
         for batch_idx, (images, labels) in enumerate(train_loader):
             images, labels = images.to(DEVICE), labels.to(DEVICE)
 
             optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
+            if use_mixup:
+                mixed_images, y_a, y_b, lam = mixup_data(images, labels, args.mixup_alpha)
+                outputs = model(mixed_images)
+                loss = mixup_criterion(criterion, outputs, y_a, y_b, lam)
+            else:
+                outputs = model(images)
+                loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
 
@@ -372,7 +505,8 @@ def train(args):
             torch.save({
                 'model_state_dict': model.state_dict(),
                 'emotion_labels': EMOTION_LABELS,
-                'img_size': IMG_SIZE,
+                'img_size': img_size,
+                'backbone': args.backbone,
                 'num_classes': NUM_CLASSES,
                 'val_acc': val_acc,
                 'epoch': epoch + 1,
@@ -416,6 +550,11 @@ def train(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train emotion recognition model')
+    parser.add_argument('--backbone', type=str, default=BACKBONE,
+                        choices=list(BACKBONE_REGISTRY.keys()),
+                        help=f'Backbone architecture (default: {BACKBONE})')
+    parser.add_argument('--img-size', type=int, default=IMG_SIZE,
+                        help=f'Input image size (default: {IMG_SIZE})')
     parser.add_argument('--fer-only', action='store_true',
                         help='Train on FER2013 only (skip AffectNet)')
     parser.add_argument('--epochs', type=int, default=EPOCHS,
@@ -424,5 +563,11 @@ if __name__ == '__main__':
                         help=f'Batch size (default: {BATCH_SIZE})')
     parser.add_argument('--learning-rate', type=float, default=LEARNING_RATE,
                         help=f'Learning rate (default: {LEARNING_RATE})')
+    parser.add_argument('--resume-from', type=str, default=None,
+                        help='Path to checkpoint to resume from (warm start, same backbone only)')
+    parser.add_argument('--zoom-augment', action=argparse.BooleanOptionalAction, default=True,
+                        help='Enable compression augmentation for Zoom robustness (default: on)')
+    parser.add_argument('--mixup-alpha', type=float, default=0.2,
+                        help='Mixup alpha (0 to disable, default: 0.2)')
     args = parser.parse_args()
     train(args)

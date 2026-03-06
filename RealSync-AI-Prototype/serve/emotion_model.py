@@ -1,11 +1,11 @@
 """
-Custom MobileNetV2 emotion model — replaces broken FER library.
+Emotion model — EfficientNet-B2 or MobileNetV2 fine-tuned for 7-class emotions.
 
-Architecture matches train_emotion.py exactly:
-  MobileNetV2 backbone → AdaptiveAvgPool2d → Flatten → 1280→256→7
+Architecture auto-detected from checkpoint metadata:
+  Backbone features → AdaptiveAvgPool2d → Flatten → feat_dim→256→7
 
 Loads weights from src/models/emotion_weights.pth (checkpoint format).
-Falls back to ImageNet-pretrained MobileNetV2 if weights not found.
+Falls back gracefully if weights not found.
 
 7-class: angry, disgust, fear, happy, sad, surprise, neutral
 Mapped to 6-class API: disgust → angry (existing convention).
@@ -38,19 +38,27 @@ _LABEL_TO_API = {
     "neutral": "Neutral",
 }
 
+# Backbone registry — must match train_emotion.py
+_BACKBONE_REGISTRY = {
+    'efficientnet_b2': (1408, models.efficientnet_b2),
+    'efficientnet_b0': (1280, models.efficientnet_b0),
+    'mobilenetv2':     (1280, models.mobilenet_v2),
+}
+
 
 class EmotionNet(nn.Module):
-    """MobileNetV2 fine-tuned for 7-class emotion classification."""
+    """Configurable backbone for 7-class emotion classification."""
 
-    def __init__(self, num_classes=7):
+    def __init__(self, num_classes=7, backbone_name='mobilenetv2'):
         super().__init__()
-        backbone = models.mobilenet_v2(weights=None)
+        feat_dim, constructor = _BACKBONE_REGISTRY[backbone_name]
+        backbone = constructor(weights=None)
         self.features = backbone.features
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Dropout(0.4),
-            nn.Linear(1280, 256),
+            nn.Linear(feat_dim, 256),
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(256, num_classes),
@@ -68,45 +76,59 @@ class EmotionNet(nn.Module):
 # ---------------------------------------------------------------
 
 _model = None
+_preprocess = None
 _lock = threading.Lock()
 
-_preprocess = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((EMOTION_INPUT_SIZE, EMOTION_INPUT_SIZE)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225]),
-])
+
+def _build_preprocess(img_size):
+    return transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.Resize((img_size, img_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
 
 
 def get_emotion_model():
-    """Load or return the cached emotion model (thread-safe)."""
-    global _model
+    """Load or return the cached emotion model (thread-safe).
+    Auto-detects backbone and input size from checkpoint metadata."""
+    global _model, _preprocess
     if _model is not None:
         return _model
     with _lock:
         if _model is not None:
             return _model
         try:
-            net = EmotionNet(num_classes=7)
-            if os.path.isfile(EMOTION_WEIGHTS_PATH):
-                try:
-                    checkpoint = torch.load(EMOTION_WEIGHTS_PATH, map_location="cpu", weights_only=True)
-                except Exception:
-                    # Checkpoint contains numpy metadata from training; safe (our own weights)
-                    print("[emotion] weights_only=True failed, falling back to weights_only=False (local weights)")
-                    checkpoint = torch.load(EMOTION_WEIGHTS_PATH, map_location="cpu", weights_only=False)
-                state_dict = checkpoint.get("model_state_dict", checkpoint)
-                net.load_state_dict(state_dict)
-                print(f"[emotion] Loaded weights from {EMOTION_WEIGHTS_PATH}")
-                net.eval()
-                _model = net
-                print("[emotion] MobileNetV2 emotion model ready")
-            else:
+            if not os.path.isfile(EMOTION_WEIGHTS_PATH):
                 _model = None
-                print(f"[emotion] DISABLED: weights not found at {EMOTION_WEIGHTS_PATH}")
+                print("[emotion] DISABLED: weights not found at " + EMOTION_WEIGHTS_PATH)
+                return _model
+
+            try:
+                checkpoint = torch.load(EMOTION_WEIGHTS_PATH, map_location="cpu", weights_only=True)
+            except Exception:
+                print("[emotion] weights_only=True failed, falling back to weights_only=False (local weights)")
+                checkpoint = torch.load(EMOTION_WEIGHTS_PATH, map_location="cpu", weights_only=False)
+
+            # Auto-detect architecture from checkpoint metadata
+            backbone_name = checkpoint.get("backbone", "mobilenetv2")
+            img_size = checkpoint.get("img_size", EMOTION_INPUT_SIZE)
+
+            net = EmotionNet(num_classes=7, backbone_name=backbone_name)
+            state_dict = checkpoint.get("model_state_dict", checkpoint)
+            net.load_state_dict(state_dict)
+            # Use MPS (Apple Silicon GPU) if available
+            _device = "mps" if torch.backends.mps.is_available() else "cpu"
+            net = net.to(_device)
+            net.train(False)
+            net._device = _device
+            _model = net
+            _preprocess = _build_preprocess(img_size)
+            print("[emotion] Loaded " + backbone_name + " on " + _device + " (" + str(img_size) + "x" + str(img_size) + ")")
+            print("[emotion] Emotion model ready")
         except Exception as e:
-            print(f"[emotion] Failed to load emotion model: {e}")
+            print("[emotion] Failed to load emotion model: " + str(e))
     return _model
 
 
@@ -132,7 +154,9 @@ def predict_emotion(face_crop_bgr: np.ndarray) -> dict:
 
     try:
         face_rgb = cv2.cvtColor(face_crop_bgr, cv2.COLOR_BGR2RGB)
-        tensor = _preprocess(face_rgb).unsqueeze(0)  # (1, 3, 128, 128)
+        preprocess = _preprocess or _build_preprocess(EMOTION_INPUT_SIZE)
+        device = getattr(model, '_device', 'cpu')
+        tensor = preprocess(face_rgb).unsqueeze(0).to(device)
 
         with torch.no_grad():
             logits = model(tensor)

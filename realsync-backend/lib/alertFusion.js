@@ -145,9 +145,12 @@ class AlertFusionEngine {
       }
     }
 
-    // 2. Identity drift
+    // 2. Identity drift — suppress when multiple participants detected (expected face switching)
     const shift = agg.identity?.embeddingShift ?? 0;
-    if (shift >= THRESHOLDS.identity.high) {
+    const faceCount = agg.faceCount || session?.metrics?.faceCount || 1;
+    if (faceCount > 1) {
+      // Multi-participant meeting: identity drift is expected, skip alerts
+    } else if (shift >= THRESHOLDS.identity.high) {
       const key = `identity_high${keySuffix}`;
       if (this._checkCooldown(key)) {
         alerts.push(
@@ -183,9 +186,9 @@ class AlertFusionEngine {
       }
     }
 
-    // 3. Emotion-based aggression
+    // 3. Emotion-based aggression (skip if confidence < 40% — Zoom compression noise)
     const emotion = agg.emotion;
-    if (emotion?.label === "Angry") {
+    if (emotion?.label === "Angry" && emotion.confidence >= 0.40) {
       if (emotion.confidence > THRESHOLDS.emotion.angerHigh) {
         const key = `aggression_high${keySuffix}`;
         if (this._checkCooldown(key)) {

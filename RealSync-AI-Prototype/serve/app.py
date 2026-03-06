@@ -36,6 +36,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 INFERENCE_TIMEOUT_S = 30  # Max seconds for any single inference call
+# Limit concurrent frame analyses to prevent request pile-up
+_frame_semaphore = asyncio.Semaphore(1)  # Process one frame at a time
 
 # Rate limiting: key by API key header (falls back to IP)
 def _rate_limit_key(request: Request) -> str:
@@ -230,22 +232,27 @@ async def analyze_frame_endpoint(request: Request, payload: AnalyzeFrameRequest)
     if not payload.sessionId:
         raise HTTPException(status_code=400, detail="sessionId is required")
 
-    try:
-        result = await asyncio.wait_for(
-            run_in_threadpool(
-                analyze_frame,
-                session_id=payload.sessionId,
-                frame_b64=payload.frameB64,
-                captured_at=payload.capturedAt,
-            ),
-            timeout=INFERENCE_TIMEOUT_S,
-        )
-        return result
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Frame analysis timed out")
-    except Exception as e:
-        print(f"[app] Frame analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+    # Only process one frame at a time — reject if already busy
+    if _frame_semaphore.locked():
+        raise HTTPException(status_code=429, detail="Frame analysis busy — try again later")
+
+    async with _frame_semaphore:
+        try:
+            result = await asyncio.wait_for(
+                run_in_threadpool(
+                    analyze_frame,
+                    session_id=payload.sessionId,
+                    frame_b64=payload.frameB64,
+                    captured_at=payload.capturedAt,
+                ),
+                timeout=INFERENCE_TIMEOUT_S,
+            )
+            return result
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Frame analysis timed out")
+        except Exception as e:
+            print(f"[app] Frame analysis failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
 @app.post("/api/analyze/audio")

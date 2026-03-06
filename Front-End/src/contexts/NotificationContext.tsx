@@ -3,6 +3,38 @@ import { useWebSocket } from './WebSocketContext';
 import { authFetch } from '../lib/api';
 import { toast } from 'sonner';
 
+/** Play a short alert tone using Web Audio API (no file needed). */
+function playAlertSound(severity: 'high' | 'critical') {
+  try {
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    // Critical: two-tone urgent beep; High: single tone
+    osc.frequency.value = severity === 'critical' ? 880 : 660;
+    gain.gain.value = 0.18;
+    osc.start();
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+    osc.stop(ctx.currentTime + 0.35);
+
+    if (severity === 'critical') {
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.frequency.value = 1100;
+      gain2.gain.value = 0.18;
+      osc2.start(ctx.currentTime + 0.2);
+      gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+      osc2.stop(ctx.currentTime + 0.55);
+    }
+  } catch {
+    // AudioContext may not be available in all environments
+  }
+}
+
 export type NotificationSeverity = 'low' | 'medium' | 'high' | 'critical';
 
 export interface AppNotification {
@@ -124,6 +156,19 @@ export function NotificationProvider({ children }: { children: import('react').R
     fetchNotifications();
   }, []);
 
+  // Auto-request desktop notification permission on first visit
+  useEffect(() => {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      // Small delay so the page finishes rendering before the browser permission prompt
+      const timer = setTimeout(() => {
+        Notification.requestPermission().then((result) => {
+          setDesktopPermission(result);
+        }).catch(() => {});
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, []);
+
   // Subscribe to WS alert messages
   useEffect(() => {
     return subscribe((message) => {
@@ -149,12 +194,18 @@ export function NotificationProvider({ children }: { children: import('react').R
         : toast.warning;
       toastFn(`${newNotification.title}: ${newNotification.message}`);
 
-      // Desktop notification when tab is hidden
+      // Play alert sound for high/critical severity
+      if (newNotification.severity === 'critical' || newNotification.severity === 'high') {
+        playAlertSound(newNotification.severity);
+      }
+
+      // Desktop (OS) notification — always for high/critical, only when hidden for low/medium
+      const isUrgent = newNotification.severity === 'critical' || newNotification.severity === 'high';
       if (
         desktopEnabledRef.current &&
-        document.hidden &&
         desktopPermRef.current === 'granted' &&
-        desktopSeverityFilterRef.current.includes(newNotification.severity)
+        desktopSeverityFilterRef.current.includes(newNotification.severity) &&
+        (isUrgent || document.hidden)
       ) {
         try {
           const safeTitle = `RealSync: ${newNotification.title}`.slice(0, 80);
