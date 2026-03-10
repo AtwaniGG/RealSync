@@ -75,6 +75,7 @@ class EmotionNet(nn.Module):
 # Lazy-loaded singleton
 # ---------------------------------------------------------------
 
+_LOAD_FAILED = object()  # Sentinel to prevent infinite retry on load failure
 _model = None
 _preprocess = None
 _lock = threading.Lock()
@@ -95,21 +96,26 @@ def get_emotion_model():
     Auto-detects backbone and input size from checkpoint metadata."""
     global _model, _preprocess
     if _model is not None:
-        return _model
+        return None if _model is _LOAD_FAILED else _model
     with _lock:
         if _model is not None:
-            return _model
+            return None if _model is _LOAD_FAILED else _model
         try:
             if not os.path.isfile(EMOTION_WEIGHTS_PATH):
-                _model = None
+                _model = _LOAD_FAILED
                 print("[emotion] DISABLED: weights not found at " + EMOTION_WEIGHTS_PATH)
-                return _model
+                return None
 
             try:
                 checkpoint = torch.load(EMOTION_WEIGHTS_PATH, map_location="cpu", weights_only=True)
-            except Exception:
-                print("[emotion] weights_only=True failed, falling back to weights_only=False (local weights)")
-                checkpoint = torch.load(EMOTION_WEIGHTS_PATH, map_location="cpu", weights_only=False)
+            except Exception as load_err:
+                # #8: Only fall back for known format incompatibility, not arbitrary failures
+                err_msg = str(load_err)
+                if "weights_only" in err_msg or "Unpickling" in err_msg or "allowed_globals" in err_msg:
+                    print("[emotion] weights_only=True incompatible, falling back to weights_only=False (local weights only)")
+                    checkpoint = torch.load(EMOTION_WEIGHTS_PATH, map_location="cpu", weights_only=False)
+                else:
+                    raise
 
             # Auto-detect architecture from checkpoint metadata
             backbone_name = checkpoint.get("backbone", "mobilenetv2")
@@ -123,13 +129,14 @@ def get_emotion_model():
             net = net.to(_device)
             net.train(False)
             net._device = _device
-            _model = net
             _preprocess = _build_preprocess(img_size)
+            _model = net  # Publish model AFTER _preprocess is set (ordering matters for readers outside lock)
             print("[emotion] Loaded " + backbone_name + " on " + _device + " (" + str(img_size) + "x" + str(img_size) + ")")
             print("[emotion] Emotion model ready")
         except Exception as e:
             print("[emotion] Failed to load emotion model: " + str(e))
-    return _model
+            _model = _LOAD_FAILED  # #20: Cache failure to prevent retry on every request
+    return None if _model is _LOAD_FAILED else _model
 
 
 # ---------------------------------------------------------------
@@ -154,13 +161,16 @@ def predict_emotion(face_crop_bgr: np.ndarray) -> dict:
 
     try:
         face_rgb = cv2.cvtColor(face_crop_bgr, cv2.COLOR_BGR2RGB)
+        # I3: Read _preprocess after get_emotion_model() guarantees it's set
         preprocess = _preprocess or _build_preprocess(EMOTION_INPUT_SIZE)
         device = getattr(model, '_device', 'cpu')
         tensor = preprocess(face_rgb).unsqueeze(0).to(device)
 
+        # TTA: average predictions from original + horizontal flip
         with torch.no_grad():
             logits = model(tensor)
-            probs = torch.softmax(logits, dim=1)[0]  # (7,)
+            logits_flip = model(torch.flip(tensor, dims=[3]))
+            probs = torch.softmax((logits + logits_flip) / 2, dim=1)[0]  # (7,)
 
         # Build 7-class raw scores
         raw_scores = {label: float(probs[i]) for i, label in enumerate(_TRAIN_LABELS_7)}

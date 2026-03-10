@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { Toaster } from 'sonner';
 import { LoginScreen } from './components/screens/LoginScreen';
@@ -10,6 +10,7 @@ import { ReportsScreen } from './components/screens/ReportsScreen';
 import { SettingsScreen } from './components/screens/SettingsScreen';
 import { FAQScreen } from './components/screens/FAQScreen';
 import { supabase } from './lib/supabaseClient';
+import { authFetch } from './lib/api';
 import { isBlockedDomain } from './lib/blockedDomains';
 import { WebSocketProvider } from './contexts/WebSocketContext';
 import { NotificationProvider } from './contexts/NotificationContext';
@@ -45,6 +46,9 @@ export default function App() {
   const [botProgress, setBotProgress] = useState<'creating' | 'joining' | 'streaming' | null>(null);
   const botProgressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [openNewSessionFlag, setOpenNewSessionFlag] = useState(0);
+  // I7: Track botConnecting state for stale callback guard
+  const botConnectingRef = useRef(botConnecting);
+  useEffect(() => { botConnectingRef.current = botConnecting; }, [botConnecting]);
 
   // Final release behavior: real auth by default. If Supabase env vars are missing (common in local dev),
   // fall back to prototype mode so the UI can still render.
@@ -232,6 +236,7 @@ export default function App() {
   }
 
   const handleStartSession = (sessionId: string, title: string, meetingType: MeetingType) => {
+    if (botProgressTimerRef.current) { clearTimeout(botProgressTimerRef.current); botProgressTimerRef.current = null; }
     setActiveSessionId(sessionId);
     setActiveMeetingTitle(title);
     setActiveMeetingType(meetingType);
@@ -243,18 +248,41 @@ export default function App() {
     botProgressTimerRef.current = setTimeout(() => setBotProgress('joining'), 1500);
   };
 
-  const handleEndSession = () => {
+  const handleEndSession = useCallback(async () => {
     if (botProgressTimerRef.current) { clearTimeout(botProgressTimerRef.current); botProgressTimerRef.current = null; }
+    // Stop session via API so bot leaves meeting (works from any screen).
+    // Note: DashboardScreen.handleEndSession calls leave+stop itself before invoking this,
+    // so only make API calls if coming from a non-dashboard screen.
+    if (activeSessionId && currentScreen !== 'dashboard') {
+      try {
+        await authFetch(`/api/sessions/${activeSessionId}/leave`, { method: 'POST' }).catch(() => {});
+        await authFetch(`/api/sessions/${activeSessionId}/stop`, { method: 'POST' });
+      } catch {
+        // Best-effort — still clear local state
+      }
+    }
     setActiveSessionId(null);
     setActiveMeetingTitle(null);
     setActiveMeetingType(null);
-  };
+  }, [activeSessionId, currentScreen]);
 
   const handleNewSession = () => {
     setCurrentScreen('sessions');
     // Increment flag to trigger dialog open in SessionsScreen
     setOpenNewSessionFlag((f) => f + 1);
   };
+
+  const handleBotConnected = useCallback(() => {
+    // I7: Guard against stale callback firing after overlay dismissed
+    if (!botConnectingRef.current) return;
+    setBotProgress('streaming');
+    if (botProgressTimerRef.current) { clearTimeout(botProgressTimerRef.current); }
+    botProgressTimerRef.current = setTimeout(() => {
+      setBotConnecting(false);
+      setBotProgress(null);
+      botProgressTimerRef.current = null;
+    }, 1200);
+  }, []);
 
   return (
     <WebSocketProvider sessionId={activeSessionId}>
@@ -348,15 +376,7 @@ export default function App() {
           onNavigate={navigateTo}
           onSignOut={handleSignOut}
           onEndSession={handleEndSession}
-          onBotConnected={() => {
-            setBotProgress('streaming');
-            if (botProgressTimerRef.current) { clearTimeout(botProgressTimerRef.current); }
-            botProgressTimerRef.current = setTimeout(() => {
-              setBotConnecting(false);
-              setBotProgress(null);
-              botProgressTimerRef.current = null;
-            }, 1200);
-          }}
+          onBotConnected={handleBotConnected}
           profilePhoto={profilePhoto}
           userName={userName}
           userEmail={userEmail}

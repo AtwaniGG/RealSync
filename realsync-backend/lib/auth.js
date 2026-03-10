@@ -93,12 +93,12 @@ function requireSessionOwner(getSessionFn, rehydrateFn) {
 
     if (!session) return res.status(404).json({ error: "Session not found" });
 
-    // In production, deny access to null-owner sessions for authenticated users
+    // Deny access to sessions owned by other users or unowned sessions
     // In prototype mode (req.userId === null), this block is skipped (early return above)
-    if (session.userId === null && process.env.NODE_ENV === "production") {
+    if (session.userId === null) {
       return res.status(403).json({ error: "Access denied — unowned session" });
     }
-    if (session.userId !== null && session.userId !== req.userId) {
+    if (session.userId !== req.userId) {
       return res.status(403).json({ error: "Access denied" });
     }
 

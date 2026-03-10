@@ -423,16 +423,30 @@ def train(args):
         else:
             print(f'Checkpoint backbone ({ckpt_backbone}) != current ({args.backbone}), training from scratch.\n')
 
+    # Unfreeze all layers if requested (discriminative LR: backbone 10x lower)
+    if args.unfreeze_all:
+        for param in model.features.parameters():
+            param.requires_grad = True
+        print('All layers unfrozen (discriminative LR: backbone=LR/10, head=LR)')
+
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'Total params: {total_params:,} | Trainable: {trainable_params:,}\n')
 
     criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
-    optimizer = optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=args.learning_rate,
-        weight_decay=0.01,
-    )
+
+    if args.unfreeze_all:
+        # Discriminative LR: backbone gets 10x lower LR than classifier
+        optimizer = optim.AdamW([
+            {'params': model.features.parameters(), 'lr': args.learning_rate / 10},
+            {'params': model.classifier.parameters(), 'lr': args.learning_rate},
+        ], weight_decay=0.01)
+    else:
+        optimizer = optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=args.learning_rate,
+            weight_decay=0.01,
+        )
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer, T_0=10, T_mult=2, eta_min=1e-6
     )
@@ -569,5 +583,7 @@ if __name__ == '__main__':
                         help='Enable compression augmentation for Zoom robustness (default: on)')
     parser.add_argument('--mixup-alpha', type=float, default=0.2,
                         help='Mixup alpha (0 to disable, default: 0.2)')
+    parser.add_argument('--unfreeze-all', action='store_true',
+                        help='Unfreeze all backbone layers with discriminative LR (backbone=LR/10)')
     args = parser.parse_args()
     train(args)

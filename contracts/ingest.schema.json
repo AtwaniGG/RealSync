@@ -93,6 +93,18 @@
         },
         "ts": { "type": "string", "format": "date-time" }
       }
+    },
+    {
+      "type": "object",
+      "title": "bot_fallback",
+      "description": "Sent when the real bot fails and a stub takes over",
+      "required": ["type", "reason"],
+      "properties": {
+        "type": { "const": "bot_fallback" },
+        "reason": { "type": "string" },
+        "message": { "type": "string" },
+        "ts": { "type": "string", "format": "date-time" }
+      }
     }
   ]
 }

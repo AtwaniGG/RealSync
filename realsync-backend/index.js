@@ -41,7 +41,10 @@ try {
     log.info("startup", `Found ${pids.length} orphaned Chromium process(es) — cleaning up`);
     for (const pid of pids) {
       try {
-        process.kill(Number(pid), "SIGTERM");
+        const n = parseInt(pid.trim(), 10);
+        if (Number.isInteger(n) && n > 1) {
+          process.kill(n, "SIGTERM");
+        }
       } catch {
         // Process may have already exited
       }
@@ -57,7 +60,7 @@ const app = express();
 app.use(helmet());
 
 // CORS — supports comma-separated ALLOWED_ORIGIN for multiple origins
-const allowedOrigins = (process.env.ALLOWED_ORIGIN || "http://localhost:3000")
+const allowedOrigins = (process.env.ALLOWED_ORIGIN || "http://localhost:5173")
   .split(",")
   .map((o) => o.trim())
   .filter(Boolean);
@@ -667,7 +670,17 @@ wssIngest.on("connection", async (socket, req) => {
   // M13: Reuse already-parsed URL instead of parsing again
   const ingestToken = url.searchParams.get("token");
   if (session.userId) {
-    const wsUserId = await authenticateWsToken(ingestToken);
+    // C2: Auth timeout — prevent hanging if token validation stalls
+    let wsUserId;
+    try {
+      wsUserId = await Promise.race([
+        authenticateWsToken(ingestToken),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Auth timeout")), 10_000)),
+      ]);
+    } catch {
+      socket.close(4003, "Access denied");
+      return;
+    }
     if (!wsUserId || wsUserId !== session.userId) {
       socket.close(4003, "Access denied");
       return;
@@ -734,6 +747,8 @@ wssIngest.on("connection", async (socket, req) => {
 
       const dataB64 = message.dataB64;
       if (typeof dataB64 !== "string" || !dataB64) return;
+      // Reject oversized audio chunks (matches processIngestMessage validation)
+      if (dataB64.length > 512 * 1024) return;
 
       const audioBuffer = Buffer.from(dataB64, "base64");
       session.stt.write(audioBuffer);
@@ -814,6 +829,31 @@ wssIngest.on("connection", async (socket, req) => {
       return;
     }
 
+    // Participants list from bot panel scraper (same logic as processIngestMessage)
+    if (message.type === "participants") {
+      const rawNames = Array.isArray(message.participants)
+        ? message.participants.map((p) => (typeof p === "string" ? p : p?.name)).filter(Boolean)
+        : message.names;
+      if (!Array.isArray(rawNames)) return;
+      const names = rawNames
+        .slice(0, 20)
+        .filter((n) => typeof n === "string" && n.trim().length > 0)
+        .map((n) => n.trim().slice(0, 100));
+      if (names.length === 0) return;
+
+      const now = makeIso();
+      names.forEach((name, index) => {
+        const existing = session.participants.get(index);
+        session.participants.set(index, { name, firstSeen: existing?.firstSeen || now });
+      });
+
+      const participantList = Array.from(session.participants.entries()).map(
+        ([faceId, data]) => ({ faceId, name: data.name, firstSeen: data.firstSeen })
+      );
+      broadcastToSession(session.id, { type: "participants", participants: participantList, ts: now });
+      return;
+    }
+
     // Bot fallback notification — real bot failed, now using stub
     if (message.type === "bot_fallback") {
       log.warn("ingest", `Bot fallback for session ${session.id}: ${message.reason} — ${message.message}`);
@@ -824,7 +864,8 @@ wssIngest.on("connection", async (socket, req) => {
         severity: "high",
         category: "system",
         title: "Bot Connection Failed",
-        message: message.message || "Real bot could not join. Using simulated data — captions and analysis are NOT from the actual meeting.",
+        // I9: Truncate user-facing fallback message to prevent oversized broadcasts
+        message: String(message.message || "Real bot could not join. Using simulated data — captions and analysis are NOT from the actual meeting.").slice(0, 500),
         recommendation: "Check the Zoom meeting URL and try again.",
         source: "system",
         ts: message.ts || makeIso(),
@@ -885,6 +926,8 @@ async function handleFrame(session, message) {
       frameB64: message.dataB64,
       capturedAt: message.capturedAt || makeIso(),
     });
+    // #10: Re-check after async gap — session may have been stopped while awaiting
+    if (session.endedAt) return;
     if (!result || !result.aggregated) return;
 
     // Camera-off mode: must be checked BEFORE noFaceDetected, since camera-off
@@ -964,6 +1007,12 @@ async function handleFrame(session, message) {
 
     // Feature #15: Multi-face alerts — iterate non-primary faces
     const faces = Array.isArray(result.faces) ? result.faces.slice(1, 6) : []; // cap at 6 total
+
+    // Compute face count before multi-face alert evaluation so alertFusion
+    // reads the current frame's faceCount, not the previous frame's.
+    const faceCount = 1 + faces.length; // primary + additional
+    session.metrics.faceCount = faceCount;
+
     for (let i = 0; i < faces.length; i++) {
       const faceId = i + 1;
       const face = faces[i];
@@ -980,10 +1029,6 @@ async function handleFrame(session, message) {
         persistence.insertAlert(session.id, alert).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
       });
     }
-
-    // Add face count to metrics for dashboard display
-    const faceCount = 1 + faces.length; // primary + additional
-    session.metrics.faceCount = faceCount;
 
     // Temporal anomaly alerts
     const temporalAlerts = session.alertFusion.evaluateTemporal(session, result);
@@ -1002,7 +1047,8 @@ async function handleFrame(session, message) {
       const identityShift = result.aggregated.identity?.embeddingShift || 0;
       // Dampen identity drift impact when multiple participants are detected
       // (face switching between participants causes expected high drift)
-      const rawFaceCount = result.aggregated.faceCount || session.metrics?.faceCount || 1;
+      // #19: Use result.faces.length directly — result.aggregated.faceCount is not set by AI service
+      const rawFaceCount = (Array.isArray(result.faces) ? result.faces.length : 0) || session.metrics?.faceCount || 1;
       const identitySignal = rawFaceCount > 1 ? Math.max(0.7, 1.0 - identityShift) : 1.0 - identityShift;
 
       let finalTrust;
@@ -1031,7 +1077,7 @@ async function handleFrame(session, message) {
       persistence.insertMetricsSnapshot(session.id, session.metrics).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
     }
   } finally {
-    frameInFlight.set(session.id, false);
+    frameInFlight.delete(session.id);
   }
 }
 
@@ -1109,7 +1155,7 @@ app.get("/api/models", (req, res) => {
 });
 
 app.post("/api/sessions", sessionCreateLimiter, (req, res) => {
-  const { title, meetingType, meetingUrl, scheduledAt } = req.body ?? {};
+  const { title, meetingType, meetingUrl, scheduledAt, displayName } = req.body ?? {};
   if (!title || typeof title !== "string" || !title.trim()) {
     return res.status(400).json({ error: "title is required" });
   }
@@ -1119,23 +1165,46 @@ app.post("/api/sessions", sessionCreateLimiter, (req, res) => {
   if (!meetingType || typeof meetingType !== "string" || !MEETING_TYPES.includes(meetingType)) {
     return res.status(400).json({ error: `meetingType must be one of: ${MEETING_TYPES.join(", ")}` });
   }
-  // Validate meeting URL is a proper HTTP(S) URL when provided
+  // C1: Validate meeting URL — only allow Zoom domains (matches /join endpoint)
   if (meetingUrl) {
     try {
-      const parsed = new URL(meetingUrl);
-      if (!["http:", "https:"].includes(parsed.protocol)) {
-        return res.status(400).json({ error: "meetingUrl must be an HTTP or HTTPS URL" });
-      }
+      const u = new URL(meetingUrl);
+      const isZoom = u.hostname.endsWith(".zoom.us") || u.hostname.endsWith(".zoom.com")
+        || u.hostname === "zoom.us" || u.hostname === "zoom.com";
+      if (u.protocol !== "https:" || !isZoom) throw new Error("Not a Zoom URL");
     } catch {
-      return res.status(400).json({ error: "meetingUrl is not a valid URL" });
+      return res.status(400).json({ error: "meetingUrl must be a valid Zoom URL (https://...zoom.us or zoom.com)" });
     }
   }
 
   const session = createSession({ title, meetingType, meetingUrl: meetingUrl || null, userId: req.userId || null });
 
-  // Store scheduledAt on session if provided (for reference)
-  if (scheduledAt) {
+  // Validate and store scheduledAt if provided
+  if (scheduledAt !== undefined) {
+    if (typeof scheduledAt !== "string") {
+      return res.status(400).json({ error: "scheduledAt must be an ISO date string" });
+    }
+    const ts = new Date(scheduledAt).getTime();
+    if (!Number.isFinite(ts)) {
+      return res.status(400).json({ error: "scheduledAt is not a valid date" });
+    }
     session.scheduledAt = scheduledAt;
+  }
+
+  // I6: Wire up backend-side bot scheduling if scheduledAt is in the future
+  if (scheduledAt && session.meetingUrl) {
+    const delay = new Date(scheduledAt).getTime() - Date.now();
+    if (delay > 0) {
+      botManager.scheduleBot({
+        sessionId: session.id,
+        meetingUrl: session.meetingUrl,
+        displayName: typeof displayName === "string" ? displayName.slice(0, 100) : undefined,
+        scheduledAt,
+        onIngestMessage: (message) => {
+          processIngestMessage(session, message);
+        },
+      });
+    }
   }
 
   return res.json({
@@ -1149,7 +1218,7 @@ app.get("/api/sessions", async (req, res) => {
   // In-memory sessions (currently active)
   const allSessions = Array.from(sessions.values());
   const filtered = req.userId
-    ? allSessions.filter((s) => !s.userId || s.userId === req.userId)
+    ? allSessions.filter((s) => s.userId === req.userId)
     : allSessions.filter((s) => !s.userId);
 
   const inMemoryList = filtered.map((s) => ({
@@ -1200,6 +1269,7 @@ app.get("/api/sessions/:id/metrics", requireSessionOwner(getSession, rehydrateSe
 app.post("/api/sessions/:id/metrics", requireSessionOwner(getSession, rehydrateSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "not found" });
+  if (session.endedAt) return res.status(410).json({ error: "Session has ended" });
 
   const payload = req.body;
   if (!payload || typeof payload !== "object") {
@@ -1254,6 +1324,8 @@ app.post("/api/sessions/:id/stop", requireSessionOwner(getSession, rehydrateSess
 
 /** Shared ingest message processor used by both WS handler and bot callback. */
 function processIngestMessage(session, message) {
+  // I4: Ignore messages for ended sessions
+  if (session.endedAt) return;
   if (message.type === "frame") {
     // Validate frame size (same as WS ingest handler)
     if (typeof message.dataB64 === "string" && message.dataB64.length > 2 * 1024 * 1024) return;
@@ -1274,7 +1346,7 @@ function processIngestMessage(session, message) {
     });
   } else if (message.type === "source_status") {
     session.botStatus = message.status || "connected";
-    session.botStreams = message.streams || {};
+    session.botStreams = message.streams || { audio: false, video: false, captions: false };
     // Mark source as external when bot connects
     if (session.botStatus === "connected" || session.botStatus === "joining") {
       session.source = "external";
@@ -1290,7 +1362,10 @@ function processIngestMessage(session, message) {
     });
   } else if (message.type === "participants") {
     // Feature #16: Participant names from bot's panel scraper
-    const rawNames = message.names;
+    // Support both contract-compliant `participants` array and legacy `names` array
+    const rawNames = Array.isArray(message.participants)
+      ? message.participants.map((p) => (typeof p === "string" ? p : p?.name)).filter(Boolean)
+      : message.names;
     if (!Array.isArray(rawNames)) return;
     const names = rawNames
       .slice(0, 20)
@@ -1308,10 +1383,24 @@ function processIngestMessage(session, message) {
       ([faceId, data]) => ({ faceId, name: data.name, firstSeen: data.firstSeen })
     );
     broadcastToSession(session.id, { type: "participants", participants: participantList, ts: now });
+  } else if (message.type === "bot_fallback") {
+    log.warn("ingest", `Bot fallback for session ${session.id}: ${message.reason} — ${message.message}`);
+    session.source = "simulated";
+    broadcastToSession(session.id, {
+      type: "alert",
+      alertId: `bot-fallback-${Date.now()}`,
+      severity: "high",
+      category: "system",
+      title: "Bot Connection Failed",
+      message: String(message.message || "Real bot could not join. Using simulated data — captions and analysis are NOT from the actual meeting.").slice(0, 500),
+      recommendation: "Check the Zoom meeting URL and try again.",
+      source: "system",
+      ts: message.ts || makeIso(),
+      sessionId: session.id,
+    });
   } else if (message.type === "audio_pcm") {
-    // Validate audio format (same as WS ingest handler)
-    if (message.sampleRate && message.sampleRate !== 16000) return;
-    if (message.channels && message.channels !== 1) return;
+    // Validate audio format (same strict check as WS ingest handler)
+    if (message.sampleRate !== 16000 || message.channels !== 1) return;
     if (!session.stt) {
       session.stt = createSttStream({
         onTranscript: (t) => handleTranscript(session, t),
@@ -1321,6 +1410,8 @@ function processIngestMessage(session, message) {
       });
     }
     const dataB64 = message.dataB64;
+    // #14: Validate audio payload size to prevent DoS via oversized chunks
+    if (typeof dataB64 === "string" && dataB64.length > 512 * 1024) return;
     if (typeof dataB64 === "string" && dataB64) {
       session.stt.write(Buffer.from(dataB64, "base64"));
 
@@ -1377,6 +1468,7 @@ function processIngestMessage(session, message) {
 app.post("/api/sessions/:id/join", requireSessionOwner(getSession, rehydrateSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
+  if (session.endedAt) return res.status(410).json({ error: "Session has ended" });
 
   const { meetingUrl } = req.body ?? {};
   const displayName = typeof req.body.displayName === "string" ? req.body.displayName.trim().slice(0, 100) : "RealSync Bot";
@@ -1513,7 +1605,7 @@ app.get("/api/sessions/:id/report", requireSessionOwner(getSession, rehydrateSes
 /*  Notification endpoints                                             */
 /* ------------------------------------------------------------------ */
 
-app.get("/api/notifications", async (req, res) => {
+app.get("/api/notifications", notificationLimiter, async (req, res) => {
   if (!req.userId) {
     return res.status(401).json({ error: "Authentication required" });
   }
@@ -1525,7 +1617,7 @@ app.get("/api/notifications", async (req, res) => {
   return res.json(result);
 });
 
-app.get("/api/notifications/unread-count", async (req, res) => {
+app.get("/api/notifications/unread-count", notificationLimiter, async (req, res) => {
   if (!req.userId) {
     return res.status(401).json({ error: "Authentication required" });
   }
@@ -1648,6 +1740,7 @@ app.post("/api/metrics", (req, res) => {
   if (!session) {
     return res.status(404).json({ error: "No active session. Create one first via POST /api/sessions." });
   }
+  if (session.endedAt) return res.status(410).json({ error: "Session has ended" });
 
   // Verify ownership — always check, no null-bypass
   if (session.userId !== req.userId) {

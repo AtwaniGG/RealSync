@@ -183,14 +183,14 @@ function startStubBot({ sessionId, meetingUrl, displayName, onIngestMessage }) {
 const JOIN_TIMEOUT_MS = 150_000;  // 150 seconds — Puppeteer launch + Zoom load + audio setup can take 90-120s
 const MAX_JOIN_RETRIES = 2;
 
-async function startRealBot({ sessionId, meetingUrl, displayName, onIngestMessage }) {
+function startRealBot({ sessionId, meetingUrl, displayName, onIngestMessage }) {
   if (!ZoomBotAdapter) {
     log.warn("botManager", "ZoomBotAdapter not available, falling back to stub");
     return startStubBot({ sessionId, meetingUrl, displayName, onIngestMessage });
   }
 
   const botId = uuidv4();
-  const adapter = new ZoomBotAdapter({ meetingUrl, displayName, onIngestMessage });
+  let adapter = new ZoomBotAdapter({ meetingUrl, displayName, onIngestMessage });
 
   const bot = {
     botId,
@@ -246,6 +246,10 @@ async function startRealBot({ sessionId, meetingUrl, displayName, onIngestMessag
         if (retryCount < MAX_JOIN_RETRIES && bots.has(sessionId) && !bot.cancelled) {
           const backoffMs = 1000 * Math.pow(2, retryCount); // 1s, 2s
           log.info("botManager", `Retrying join for ${sessionId} in ${backoffMs}ms (retry ${retryCount + 1}/${MAX_JOIN_RETRIES})`);
+          // Clean up the failed adapter before creating a new one for retry
+          adapter.leave().catch(() => {});
+          bot.adapter = new ZoomBotAdapter({ meetingUrl, displayName, onIngestMessage });
+          adapter = bot.adapter;
           bot.status = "joining";
           setTimeout(() => {
             if (bots.has(sessionId) && bot.status === "joining") {
@@ -338,7 +342,7 @@ function scheduleBot({ sessionId, meetingUrl, scheduledAt, displayName, onIngest
       return startBot({ sessionId, meetingUrl, displayName, onIngestMessage });
     } catch (err) {
       log.error("botManager", `scheduleBot immediate start failed for ${sessionId}: ${err.message}`);
-      return { botId: sessionId, status: "error" };
+      return { botId: null, status: "error" };
     }
   }
 

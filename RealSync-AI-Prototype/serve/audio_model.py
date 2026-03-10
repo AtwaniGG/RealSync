@@ -139,6 +139,7 @@ class AudioDeepfakeNet(nn.Module):
 # Lazy-loaded singleton
 # ---------------------------------------------------------------
 
+_LOAD_FAILED = object()  # Sentinel to prevent infinite retry on load failure
 _model = None
 _lock = threading.Lock()
 
@@ -147,10 +148,10 @@ def get_audio_model():
     """Load or return the cached audio deepfake model (thread-safe)."""
     global _model
     if _model is not None:
-        return _model
+        return None if _model is _LOAD_FAILED else _model
     with _lock:
         if _model is not None:
-            return _model
+            return None if _model is _LOAD_FAILED else _model
         try:
             net = AudioDeepfakeNet()
             if os.path.isfile(AASIST_WEIGHTS_PATH):
@@ -161,14 +162,19 @@ def get_audio_model():
             else:
                 print(f"[audio] WARNING: AASIST weights not found at {AASIST_WEIGHTS_PATH}")
                 print("[audio] Model disabled — no weights available")
-                _model = None
+                _model = _LOAD_FAILED
                 return None
-            net.eval()
+            net.train(False)
+            # #6: Move to MPS device for GPU inference (matches deepfake/emotion models)
+            _device = "mps" if torch.backends.mps.is_available() else "cpu"
+            net = net.to(_device)
+            net._device = _device
             _model = net
-            print(f"[audio] {MODEL_NAME} model ready")
+            print(f"[audio] {MODEL_NAME} model ready on {_device}")
         except Exception as exc:
             print(f"[audio] Failed to load audio model: {exc}")
-    return _model
+            _model = _LOAD_FAILED
+    return None if _model is _LOAD_FAILED else _model
 
 
 # ---------------------------------------------------------------
@@ -188,6 +194,9 @@ def predict_audio(audio_b64: str) -> dict:
 
     try:
         pcm_bytes = base64.b64decode(audio_b64, validate=True)
+        if len(pcm_bytes) % 2 != 0:
+            print(f"[audio] Rejecting odd-byte PCM payload ({len(pcm_bytes)} bytes)")
+            return {"authenticityScore": None, "riskLevel": "unknown", "model": MODEL_NAME, "available": False}
         pcm_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
         waveform = pcm_int16.astype(np.float32) / 32768.0
 
@@ -197,7 +206,8 @@ def predict_audio(audio_b64: str) -> dict:
         else:
             waveform = waveform[:TARGET_LENGTH]
 
-        tensor = torch.from_numpy(waveform).float().unsqueeze(0).unsqueeze(0)  # (1, 1, 64000)
+        device = getattr(model, '_device', 'cpu')
+        tensor = torch.from_numpy(waveform).float().unsqueeze(0).unsqueeze(0).to(device)  # (1, 1, 64000)
 
         with torch.no_grad():
             raw = model(tensor)
