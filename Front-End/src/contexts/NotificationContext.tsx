@@ -1,12 +1,25 @@
 import { createContext, useContext, useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useWebSocket } from './WebSocketContext';
 import { authFetch } from '../lib/api';
+import { supabase } from '../lib/supabaseClient';
 import { toast } from 'sonner';
+
+/** #17: Shared AudioContext — reused across alerts to prevent resource exhaustion. */
+let _sharedAudioCtx: AudioContext | null = null;
+function getAudioContext(): AudioContext {
+  if (!_sharedAudioCtx || _sharedAudioCtx.state === 'closed') {
+    _sharedAudioCtx = new AudioContext();
+  }
+  return _sharedAudioCtx;
+}
 
 /** Play a short alert tone using Web Audio API (no file needed). */
 function playAlertSound(severity: 'high' | 'critical') {
   try {
-    const ctx = new AudioContext();
+    const ctx = getAudioContext();
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
@@ -127,12 +140,15 @@ export function NotificationProvider({ children }: { children: import('react').R
   // Fetch initial notification history
   useEffect(() => {
     if (initialFetchDone.current) return;
-    initialFetchDone.current = true;
 
     const fetchNotifications = async () => {
+      initialFetchDone.current = true; // Claim slot first to prevent concurrent fetches
       try {
         const res = await authFetch('/api/notifications?limit=50');
-        if (!res.ok) return;
+        if (!res.ok) {
+          initialFetchDone.current = false; // Allow retry on failure
+          return;
+        }
         const data = await res.json();
         if (data.notifications) {
           setNotifications(data.notifications.map((n: Record<string, unknown>) => ({
@@ -154,6 +170,37 @@ export function NotificationProvider({ children }: { children: import('react').R
     };
 
     fetchNotifications();
+  }, []);
+
+  // Reset notifications on sign-out and re-fetch on sign-in
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        setNotifications([]);
+        initialFetchDone.current = false;
+      }
+      if (event === 'SIGNED_IN' && !initialFetchDone.current) {
+        initialFetchDone.current = true;
+        authFetch('/api/notifications?limit=50').then(async (res) => {
+          if (!res.ok) return;
+          const data = await res.json();
+          if (data.notifications) {
+            setNotifications(data.notifications.map((n: Record<string, unknown>) => ({
+              id: n.id as string,
+              sessionId: n.sessionId as string,
+              severity: n.severity as NotificationSeverity,
+              category: (n.category as string) || 'unknown',
+              title: n.title as string,
+              message: n.message as string,
+              recommendation: (n.recommendation as string) || null,
+              ts: n.ts as string,
+              read: n.read as boolean,
+            })));
+          }
+        }).catch(() => {});
+      }
+    });
+    return () => subscription.unsubscribe();
   }, []);
 
   // Auto-request desktop notification permission on first visit
@@ -208,8 +255,9 @@ export function NotificationProvider({ children }: { children: import('react').R
         (isUrgent || document.hidden)
       ) {
         try {
-          const safeTitle = `RealSync: ${newNotification.title}`.slice(0, 80);
-          const safeBody = (newNotification.recommendation
+          const stripControl = (s: string) => s.replace(/[\u0000-\u001F\u007F-\u009F]/g, '').trim();
+          const safeTitle = stripControl(`RealSync: ${newNotification.title}`).slice(0, 80);
+          const safeBody = stripControl(newNotification.recommendation
               ? `Alert: ${newNotification.message}. Recommendation: ${newNotification.recommendation}`
               : newNotification.message).slice(0, 300);
           new Notification(safeTitle, {

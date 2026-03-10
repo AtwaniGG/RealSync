@@ -36,6 +36,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 INFERENCE_TIMEOUT_S = 30  # Max seconds for any single inference call
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 # Limit concurrent frame analyses to prevent request pile-up
 _frame_semaphore = asyncio.Semaphore(1)  # Process one frame at a time
 
@@ -149,8 +150,8 @@ app.add_middleware(
 # API key authentication middleware
 @app.middleware("http")
 async def api_key_auth(request: Request, call_next):
-    # Skip auth if no API key is configured or for health endpoint
-    if not AI_API_KEY or request.url.path == "/api/health":
+    # Skip auth if no API key is configured, for health endpoint, or CORS preflight
+    if not AI_API_KEY or request.url.path == "/api/health" or request.method == "OPTIONS":
         return await call_next(request)
     provided = request.headers.get("X-API-Key", "")
     if provided != AI_API_KEY:
@@ -229,30 +230,40 @@ async def analyze_frame_endpoint(request: Request, payload: AnalyzeFrameRequest)
     """Analyze a video frame for deepfake, emotion, and identity signals."""
     if not payload.frameB64 or not payload.frameB64.strip():
         raise HTTPException(status_code=400, detail="frameB64 is required")
-    if not payload.sessionId:
-        raise HTTPException(status_code=400, detail="sessionId is required")
+    if not payload.sessionId or not _UUID_RE.match(payload.sessionId):
+        raise HTTPException(status_code=400, detail="sessionId must be a valid UUID")
 
-    # Only process one frame at a time — reject if already busy
-    if _frame_semaphore.locked():
+    # Reject oversized frame payloads (2MB base64 ≈ 1.5MB decoded)
+    if len(payload.frameB64) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="frameB64 payload exceeds 2MB limit")
+
+    # Atomic try-acquire: non-blocking attempt avoids TOCTOU race
+    acquired = False
+    try:
+        await asyncio.wait_for(_frame_semaphore.acquire(), timeout=0)
+        acquired = True
+    except asyncio.TimeoutError:
         raise HTTPException(status_code=429, detail="Frame analysis busy — try again later")
 
-    async with _frame_semaphore:
-        try:
-            result = await asyncio.wait_for(
-                run_in_threadpool(
-                    analyze_frame,
-                    session_id=payload.sessionId,
-                    frame_b64=payload.frameB64,
-                    captured_at=payload.capturedAt,
-                ),
-                timeout=INFERENCE_TIMEOUT_S,
-            )
-            return result
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="Frame analysis timed out")
-        except Exception as e:
-            print(f"[app] Frame analysis failed: {e}")
-            raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+    try:
+        result = await asyncio.wait_for(
+            run_in_threadpool(
+                analyze_frame,
+                session_id=payload.sessionId,
+                frame_b64=payload.frameB64,
+                captured_at=payload.capturedAt,
+            ),
+            timeout=INFERENCE_TIMEOUT_S,
+        )
+        return result
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Frame analysis timed out")
+    except Exception as e:
+        print(f"[app] Frame analysis failed: {e}")
+        raise HTTPException(status_code=500, detail="Analysis failed — see server logs")
+    finally:
+        if acquired:
+            _frame_semaphore.release()
 
 
 @app.post("/api/analyze/audio")
@@ -261,8 +272,8 @@ async def analyze_audio_endpoint(request: Request, payload: AnalyzeAudioRequest)
     """Analyze audio for deepfake detection using AASIST."""
     if not payload.audioB64:
         raise HTTPException(status_code=400, detail="audioB64 is required")
-    if not payload.sessionId:
-        raise HTTPException(status_code=400, detail="sessionId is required")
+    if not payload.sessionId or not _UUID_RE.match(payload.sessionId):
+        raise HTTPException(status_code=400, detail="sessionId must be a valid UUID")
     # M5: Reject oversized audio payloads (4MB base64 ≈ 3MB decoded)
     if len(payload.audioB64) > 4 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="audioB64 payload exceeds 4MB limit")
@@ -282,7 +293,7 @@ async def analyze_audio_endpoint(request: Request, payload: AnalyzeAudioRequest)
         raise HTTPException(status_code=504, detail="Audio analysis timed out")
     except Exception as e:
         print(f"[app] Audio analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Audio analysis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Audio analysis failed — see server logs")
 
 
 @app.post("/api/analyze/text")
@@ -291,8 +302,8 @@ async def analyze_text_endpoint(request: Request, payload: AnalyzeTextRequest):
     """Analyze transcript text for behavioral signals using DeBERTa-v3."""
     if not payload.text or not payload.text.strip():
         raise HTTPException(status_code=400, detail="text is required")
-    if not payload.sessionId:
-        raise HTTPException(status_code=400, detail="sessionId is required")
+    if not payload.sessionId or not _UUID_RE.match(payload.sessionId):
+        raise HTTPException(status_code=400, detail="sessionId must be a valid UUID")
     # I4: Reject oversized text payloads
     if len(payload.text) > 50_000:
         raise HTTPException(status_code=413, detail="text payload exceeds 50KB limit")
@@ -312,15 +323,15 @@ async def analyze_text_endpoint(request: Request, payload: AnalyzeTextRequest):
         raise HTTPException(status_code=504, detail="Text analysis timed out")
     except Exception as e:
         print(f"[app] Text analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Text analysis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Text analysis failed — see server logs")
 
 
 @app.post("/api/sessions/{session_id}/clear-identity")
 @limiter.limit("60/minute")
 async def clear_identity(request: Request, session_id: str):
     """Clear stored identity baselines, temporal buffer, and no-face counters for a session."""
-    if not session_id or len(session_id) > 64 or not re.match(r'^[a-zA-Z0-9_-]+$', session_id):
-        raise HTTPException(status_code=400, detail="Invalid session_id format")
+    if not session_id or not _UUID_RE.match(session_id):
+        raise HTTPException(status_code=400, detail="sessionId must be a valid UUID")
     cleanup_session(session_id)
     return {"ok": True, "sessionId": session_id}
 

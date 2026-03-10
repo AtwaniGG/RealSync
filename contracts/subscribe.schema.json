@@ -41,7 +41,7 @@
               "properties": {
                 "samePerson": { "type": "boolean" },
                 "embeddingShift": { "type": "number", "minimum": 0, "maximum": 1 },
-                "riskLevel": { "type": "string", "enum": ["low", "medium", "high"] }
+                "riskLevel": { "type": "string", "enum": ["low", "medium", "high", "unknown"] }
               }
             },
             "deepfake": {
@@ -50,7 +50,7 @@
               "properties": {
                 "authenticityScore": { "type": "number", "minimum": 0, "maximum": 1 },
                 "model": { "type": "string" },
-                "riskLevel": { "type": "string", "enum": ["low", "medium", "high"] }
+                "riskLevel": { "type": "string", "enum": ["low", "medium", "high", "unknown"] }
               }
             },
             "trustScore": { "type": "number", "minimum": 0, "maximum": 1 },
@@ -89,7 +89,7 @@
         "sessionId": { "type": "string" },
         "alertId": { "type": "string", "format": "uuid" },
         "severity": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
-        "category": { "type": "string", "enum": ["deepfake", "identity", "emotion", "fraud", "scam", "altercation"] },
+        "category": { "type": "string", "enum": ["deepfake", "identity", "emotion", "fraud", "scam", "altercation", "system"] },
         "title": { "type": "string" },
         "message": { "type": "string" },
         "source": {
@@ -118,7 +118,9 @@
           "items": {
             "type": "object",
             "properties": {
+              "faceId": { "type": "integer" },
               "name": { "type": "string" },
+              "firstSeen": { "type": "string", "format": "date-time" },
               "role": { "type": "string" }
             }
           }

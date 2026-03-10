@@ -8,6 +8,7 @@ Loads fine-tuned weights if available; ImageNet features used as baseline.
 Input: BGR face crop (any size, resized to 380x380 internally).
 Output: {"authenticityScore": float, "riskLevel": str, "model": str}
 """
+import math
 import os
 import threading
 
@@ -53,6 +54,7 @@ class EfficientNetDeepfake(nn.Module):
 # Lazy-loaded singleton
 # ---------------------------------------------------------------
 
+_LOAD_FAILED = object()  # Sentinel to prevent infinite retry on load failure
 _model = None
 _lock = threading.Lock()
 
@@ -69,10 +71,10 @@ def get_deepfake_model():
     """Load or return the cached deepfake model (thread-safe)."""
     global _model
     if _model is not None:
-        return _model
+        return None if _model is _LOAD_FAILED else _model
     with _lock:
         if _model is not None:
-            return _model
+            return None if _model is _LOAD_FAILED else _model
         try:
             net = EfficientNetDeepfake()
 
@@ -83,8 +85,8 @@ def get_deepfake_model():
                 print("[deepfake] Loaded SBI weights from " + EFFICIENTNET_WEIGHTS_PATH)
             else:
                 print("[deepfake] WARNING: SBI weights not found at " + EFFICIENTNET_WEIGHTS_PATH)
-                _model = None
-                return _model
+                _model = _LOAD_FAILED
+                return None
 
             # Use MPS (Apple Silicon GPU) if available for faster inference
             _device = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -96,7 +98,8 @@ def get_deepfake_model():
             print(f"[deepfake] {MODEL_NAME} model ready")
         except Exception as exc:
             print(f"[deepfake] Failed to load model: {exc}")
-    return _model
+            _model = _LOAD_FAILED
+    return None if _model is _LOAD_FAILED else _model
 
 
 # ---------------------------------------------------------------
@@ -136,13 +139,12 @@ def predict_deepfake(face_crop_bgr: np.ndarray) -> dict:
         # genuine deepfakes (raw < 0.01) to score low.
         raw_authenticity = 1.0 - prediction
 
-        # Sigmoid rescale: stretches the useful range for compressed video
-        import math
-        # Observed Zoom real-face raw_auth: 0.0001–0.002 (most frames)
-        # Center at 0.0008, steepness 800 to resolve this narrow range
-        calibrated = 1.0 / (1.0 + math.exp(-800 * (raw_authenticity - 0.0008)))
-        # Scale to [0.65, 0.95] — real Zoom faces land 0.75–0.87
-        calibrated = 0.65 + calibrated * 0.30
+        # I1: Sigmoid rescale — widened to let genuine deepfakes trigger alerts.
+        # Observed Zoom real-face raw_auth: 0.01–0.15 (most frames).
+        # Actual deepfakes through Zoom score near 0.
+        # center=0.005, steepness=150, output range [0.30, 0.95]
+        calibrated = 1.0 / (1.0 + math.exp(-150 * (raw_authenticity - 0.005)))
+        calibrated = 0.30 + calibrated * 0.65
 
         print(f"[deepfake] raw_prediction={prediction:.4f} raw_auth={raw_authenticity:.4f} calibrated={calibrated:.4f}")
         authenticity = round(max(0.0, min(1.0, calibrated)), 4)

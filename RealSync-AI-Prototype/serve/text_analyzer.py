@@ -57,6 +57,7 @@ HIGH_SEVERITY_THRESHOLD = TEXT_HIGH_SEVERITY_THRESHOLD
 # Lazy-loaded singleton
 # ---------------------------------------------------------------
 
+_LOAD_FAILED = object()  # Sentinel to prevent infinite retry on load failure
 _pipeline = None
 _lock = threading.Lock()
 # max_workers=2 ensures that even if one task is blocked by the 5s timeout
@@ -68,10 +69,10 @@ def get_text_analyzer():
     """Load or return the cached zero-shot classification pipeline (thread-safe)."""
     global _pipeline
     if _pipeline is not None:
-        return _pipeline
+        return None if _pipeline is _LOAD_FAILED else _pipeline
     with _lock:
         if _pipeline is not None:
-            return _pipeline
+            return None if _pipeline is _LOAD_FAILED else _pipeline
         try:
             from transformers import pipeline
             _pipeline = pipeline(
@@ -82,7 +83,8 @@ def get_text_analyzer():
             print(f"[text] {MODEL_NAME} pipeline loaded ({MODEL_ID})")
         except Exception as exc:
             print(f"[text] Failed to load text analyzer: {exc}")
-    return _pipeline
+            _pipeline = _LOAD_FAILED
+    return None if _pipeline is _LOAD_FAILED else _pipeline
 
 
 # ---------------------------------------------------------------

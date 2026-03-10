@@ -25,7 +25,7 @@ const path = require("path");
 const log = require("../lib/logger");
 
 const DEFAULT_DISPLAY_NAME = "RealSync Bot";
-const JOIN_TIMEOUT_MS = 60_000; // 60s to get into the meeting
+const PUPPETEER_TIMEOUT_MS = 120_000; // I5: 120s to get into the meeting (Puppeteer+Zoom can take >60s)
 const FRAME_INTERVAL_MS = 2000; // 1 frame every 2s (0.5 FPS)
 const CAPTION_POLL_MS = 1000; // check captions every 1s
 const AUDIO_CHUNK_MS = 500; // send audio chunks every 500ms
@@ -189,7 +189,7 @@ class ZoomBotAdapter {
       log.info("zoomBot", `Navigating to: ${this.meetingUrl}`);
       await this.page.goto(this.meetingUrl, {
         waitUntil: "networkidle2",
-        timeout: JOIN_TIMEOUT_MS,
+        timeout: PUPPETEER_TIMEOUT_MS,
       });
       await this._debugScreenshot("01_initial_load");
 
@@ -277,7 +277,7 @@ class ZoomBotAdapter {
 
     if (meetingIdMatch) {
       const meetingId = meetingIdMatch[1];
-      const directUrl = `https://app.zoom.us/wc/${meetingId}/join${pwdMatch ? "?pwd=" + encodeURIComponent(pwdMatch[1]) : ""}`;
+      const directUrl = `https://app.zoom.us/wc/${meetingId}/join${pwdMatch ? "?pwd=" + pwdMatch[1] : ""}`;
       // Validate constructed URL to prevent SSRF
       const parsedUrl = new URL(directUrl);
       if (parsedUrl.protocol !== 'https:' || parsedUrl.hostname !== 'app.zoom.us') {
@@ -392,7 +392,7 @@ class ZoomBotAdapter {
           '[class*="active-video"]',
           ".footer-button-base__button",
         ].join(", "),
-        { timeout: JOIN_TIMEOUT_MS }
+        { timeout: PUPPETEER_TIMEOUT_MS }
       );
       log.info("zoomBot", "Meeting view detected — we're in!");
     } catch {
@@ -1310,6 +1310,7 @@ class ZoomBotAdapter {
         this.onIngestMessage({
           type: "participants",
           names,
+          participants: names.map((name) => ({ name })),
           ts: new Date().toISOString(),
         });
       } catch (err) {

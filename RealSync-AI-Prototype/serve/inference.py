@@ -12,7 +12,7 @@ import datetime
 import re
 import time
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Dict, List, Optional
 
 import cv2
@@ -51,6 +51,9 @@ from serve.deepfake_model import predict_deepfake, get_deepfake_model
 # ---------------------------------------------------------------
 # Lazy-loaded models (loaded once on first call)
 # ---------------------------------------------------------------
+
+# I2: Module-level thread pool — avoids creating/destroying threads per face
+_inference_pool = ThreadPoolExecutor(max_workers=3)
 
 _identity_tracker = IdentityTracker()
 _temporal_analyzer = TemporalAnalyzer(window_size=15)
@@ -122,9 +125,9 @@ def cleanup_session(session_id: str):
 def decode_frame(frame_b64: str) -> Optional[np.ndarray]:
     """Decode a base64-encoded JPEG into a BGR numpy array."""
     try:
-        # M5: Reject oversized payloads (4MB base64 ≈ 3MB decoded image)
-        if len(frame_b64) > 4 * 1024 * 1024:
-            print("[inference] Frame rejected: base64 payload exceeds 4MB limit")
+        # Reject oversized payloads (2MB base64 ≈ 1.5MB decoded, matches endpoint limit)
+        if len(frame_b64) > 2 * 1024 * 1024:
+            print("[inference] Frame rejected: base64 payload exceeds 2MB limit")
             return None
         img_bytes = base64.b64decode(frame_b64, validate=True)
         nparr = np.frombuffer(img_bytes, np.uint8)
@@ -309,13 +312,30 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
         deepfake_crop = face_info.get("crop_original", crop)
 
         # Run deepfake, emotion, identity in parallel (independent models)
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            df_future = pool.submit(analyze_deepfake, deepfake_crop)
-            em_future = pool.submit(analyze_emotion, crop)
-            id_future = pool.submit(analyze_identity, session_id, face_id, crop)
-            deepfake_result = df_future.result()
-            emotion_result = em_future.result()
-            identity_result = id_future.result()
+        # I2: Reuse module-level thread pool instead of creating per-face
+        df_future = _inference_pool.submit(analyze_deepfake, deepfake_crop)
+        em_future = _inference_pool.submit(analyze_emotion, crop)
+        id_future = _inference_pool.submit(analyze_identity, session_id, face_id, crop)
+        # Await each future individually so a single timeout doesn't discard
+        # already-completed results, and cancel remaining futures on timeout.
+        deepfake_result = {"authenticityScore": None, "riskLevel": "unknown", "model": "timeout"}
+        emotion_result = {"label": "Neutral", "confidence": 0.0, "scores": {}}
+        identity_result = {"embeddingShift": 0.0, "samePerson": True, "riskLevel": "low"}
+        try:
+            deepfake_result = df_future.result(timeout=30)
+        except FuturesTimeoutError:
+            print(f"[inference] Deepfake model timed out for session {session_id}")
+            em_future.cancel()
+            id_future.cancel()
+        try:
+            emotion_result = em_future.result(timeout=30)
+        except FuturesTimeoutError:
+            print(f"[inference] Emotion model timed out for session {session_id}")
+            id_future.cancel()
+        try:
+            identity_result = id_future.result(timeout=30)
+        except FuturesTimeoutError:
+            print(f"[inference] Identity model timed out for session {session_id}")
 
         face_results.append({
             "faceId": face_id,

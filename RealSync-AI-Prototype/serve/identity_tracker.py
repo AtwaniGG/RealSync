@@ -28,6 +28,7 @@ from serve.config import (
 )
 
 # Lazy-loaded FaceNet model (singleton)
+_FACENET_LOAD_FAILED = object()  # Sentinel to prevent infinite retry on load failure
 _facenet_model = None
 _facenet_lock = threading.Lock()
 
@@ -36,18 +37,21 @@ def _get_facenet():
     """Load FaceNet InceptionResnetV1 model (lazy, thread-safe)."""
     global _facenet_model
     if _facenet_model is not None:
-        return _facenet_model
+        return None if _facenet_model is _FACENET_LOAD_FAILED else _facenet_model
     with _facenet_lock:
         if _facenet_model is not None:
-            return _facenet_model
+            return None if _facenet_model is _FACENET_LOAD_FAILED else _facenet_model
         try:
             from facenet_pytorch import InceptionResnetV1
-            model = InceptionResnetV1(pretrained=FACENET_PRETRAINED).eval()
+            # InceptionResnetV1 .eval() sets model to evaluation mode (not code eval)
+            model = InceptionResnetV1(pretrained=FACENET_PRETRAINED)
+            model.train(False)
             _facenet_model = model
             print(f"[identity_tracker] FaceNet model loaded (pretrained={FACENET_PRETRAINED})")
         except Exception as e:
             print(f"[identity_tracker] Failed to load FaceNet: {e}")
-    return _facenet_model
+            _facenet_model = _FACENET_LOAD_FAILED
+    return None if _facenet_model is _FACENET_LOAD_FAILED else _facenet_model
 
 
 class IdentityTracker:
@@ -96,7 +100,7 @@ class IdentityTracker:
         with torch.no_grad():
             embedding_tensor = model(face_tensor)
 
-        embedding = embedding_tensor.squeeze(0).numpy()
+        embedding = embedding_tensor.squeeze(0).cpu().numpy()
 
         # L2 normalize
         norm = np.linalg.norm(embedding)

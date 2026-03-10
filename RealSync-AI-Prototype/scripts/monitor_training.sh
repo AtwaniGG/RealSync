@@ -8,8 +8,11 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BASE_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Use B2 log if it exists, otherwise fall back to original
-if [[ -f "${BASE_DIR}/training_emotion_b2.log" ]]; then
+# Use the most recent active log file
+# Priority: finetune (latest) > b2 > original
+if [[ -f "/tmp/training_emotion_finetune.log" ]]; then
+    EMOTION_LOG="/tmp/training_emotion_finetune.log"
+elif [[ -f "${BASE_DIR}/training_emotion_b2.log" ]]; then
     EMOTION_LOG="${BASE_DIR}/training_emotion_b2.log"
 else
     EMOTION_LOG="${BASE_DIR}/training_emotion.log"
@@ -402,7 +405,11 @@ render() {
         if [[ "$E_RESUMED" != "--" ]]; then
             warm_badge=$(printf "  %b WARM START %b" "$BG_GREEN" "$RST")
         fi
-        row "$(printf "  %s%s  %b%s%b" "$aug_badge" "$warm_badge" "$DIM" "${E_DATASETS}" "$RST")"
+        local unfreeze_badge=""
+        if grep -q "All layers unfrozen" "$EMOTION_LOG" 2>/dev/null; then
+            unfreeze_badge=$(printf "  %b FULL UNFREEZE %b" "$BG_GREEN" "$RST")
+        fi
+        row "$(printf "  %s%s%s  %b%s%b" "$aug_badge" "$warm_badge" "$unfreeze_badge" "$DIM" "${E_DATASETS}" "$RST")"
         row_empty
     fi
 
@@ -524,6 +531,10 @@ render() {
             row "$(printf "  Patience:  %b%s%b  %d/7 (early stop)" "$patience_color" "$patience_bar" "$RST" "$patience_used")"
         fi
     fi
+
+    # Inference enhancements
+    row_empty
+    row "$(printf "  %bInference:%b  %b TTA %b (orig+flip avg)" "$DIM" "$RST" "$BG_GREEN" "$RST")"
 
     # Footer
     hline "╚" "═" "╝"
