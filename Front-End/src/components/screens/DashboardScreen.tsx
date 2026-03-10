@@ -219,6 +219,18 @@ export function DashboardScreen({
       return;
     }
 
+    if (message?.type === 'suggestion') {
+      const title = typeof message.title === 'string' ? message.title : 'Suggestion';
+      const body = typeof message.message === 'string' ? message.message : '';
+      const severity = message.severity as string;
+      if (severity === 'high') {
+        toast.warning(`${title}: ${body}`);
+      } else {
+        toast.info(`${title}: ${body}`);
+      }
+      return;
+    }
+
     if (message?.type === 'sourceStatus') {
       const newStatus = (message.status as BotStatus) || 'disconnected';
       setBotStatus(newStatus);
@@ -602,12 +614,12 @@ export function DashboardScreen({
               <div>
                 <div className="flex justify-between text-xs text-gray-400 mb-1">
                   <span>Embedding Shift</span>
-                  <span className="font-mono">{toPercent(displayMetrics.identity.embeddingShift)}%</span>
+                  <span className="font-mono">{hasData ? displayMetrics.identity.embeddingShift.toFixed(3) : '--'}</span>
                 </div>
                 <div className="h-2 bg-[#2a2a3e] rounded-full overflow-hidden">
                   <div
                     className={`h-full ${displayMetrics.identity.riskLevel === 'high' ? 'bg-red-400' : displayMetrics.identity.riskLevel === 'medium' ? 'bg-yellow-400' : 'bg-green-400'}`}
-                    style={{ width: `${toPercent(displayMetrics.identity.embeddingShift)}%` }}
+                    style={{ width: hasData ? `${toPercent(displayMetrics.identity.embeddingShift)}%` : '0%' }}
                   ></div>
                 </div>
               </div>
@@ -653,7 +665,7 @@ export function DashboardScreen({
             </div>
 
             {/* Participant Tracking */}
-            {(participants.length > 0 || (displayMetrics.faceCount != null && displayMetrics.faceCount > 1)) && (
+            {hasData && (participants.length > 0 || (displayMetrics.faceCount != null && displayMetrics.faceCount > 1)) && (
               <ParticipantList
                 participants={participants}
                 faceCount={displayMetrics.faceCount}

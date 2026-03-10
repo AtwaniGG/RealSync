@@ -50,7 +50,7 @@
           "properties": {
             "embeddingShift": { "type": "number" },
             "samePerson": { "type": "boolean" },
-            "riskLevel": { "type": "string", "enum": ["low", "medium", "high"] }
+            "riskLevel": { "type": "string", "enum": ["low", "medium", "high", "unknown"] }
           }
         },
         "deepfake": {

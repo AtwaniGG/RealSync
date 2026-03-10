@@ -320,10 +320,17 @@ async function clearSession(sessionId) {
     const headers = { "Content-Type": "application/json" };
     if (AI_API_KEY) headers["X-API-Key"] = AI_API_KEY;
 
-    await fetchImpl(`${AI_SERVICE_URL}/api/sessions/${sessionId}/clear-identity`, {
-      method: "POST",
-      headers,
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      await fetchImpl(`${AI_SERVICE_URL}/api/sessions/${sessionId}/clear-identity`, {
+        method: "POST",
+        headers,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
   } catch (err) {
     log.warn("aiClient", `clearSession(${sessionId}) failed: ${err?.message ?? err}`);
   }

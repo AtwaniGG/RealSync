@@ -82,7 +82,17 @@ const SCHEDULED_STORAGE_KEY = 'realsync_scheduled';
 
 function saveScheduled(sessions: ScheduledSession[]): void {
   try {
-    localStorage.setItem(SCHEDULED_STORAGE_KEY, JSON.stringify(sessions));
+    // C4: Strip Zoom password before persisting to localStorage
+    const sanitized = sessions.map((s) => {
+      try {
+        const url = new URL(s.meetingUrl);
+        url.searchParams.delete('pwd');
+        return { ...s, meetingUrl: url.toString() };
+      } catch {
+        return s;
+      }
+    });
+    localStorage.setItem(SCHEDULED_STORAGE_KEY, JSON.stringify(sanitized));
   } catch { /* quota exceeded — ignore */ }
 }
 
@@ -90,11 +100,22 @@ function loadScheduled(): ScheduledSession[] {
   try {
     const raw = localStorage.getItem(SCHEDULED_STORAGE_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw) as ScheduledSession[];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
     // Filter out expired entries (scheduledAt in the past) and already-joining/joined
-    return parsed.filter(
+    return (parsed as ScheduledSession[]).filter(
       (s) => s.status === 'waiting' && new Date(s.scheduledAt).getTime() > Date.now(),
-    );
+    ).map((s) => {
+      // C4: Strip Zoom password from stored URLs
+      try {
+        const url = new URL(s.meetingUrl);
+        url.searchParams.delete('pwd');
+        return { ...s, meetingUrl: url.toString() };
+      } catch {
+        return s;
+      }
+    // #16: Re-validate Zoom URL on load to prevent injected URLs from localStorage
+    }).filter((s) => isValidZoomUrl(s.meetingUrl));
   } catch {
     return [];
   }
@@ -104,9 +125,11 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
   const { isConnected: wsConnected } = useWebSocket();
   const [isNewSessionOpen, setIsNewSessionOpen] = useState(false);
 
-  // Open new session dialog when triggered from TopBar on another page
+  // I10: Track last consumed flag to prevent stale reopens
+  const lastConsumedFlag = useRef(0);
   useEffect(() => {
-    if (openNewSessionFlag && openNewSessionFlag > 0) {
+    if (openNewSessionFlag && openNewSessionFlag > lastConsumedFlag.current) {
+      lastConsumedFlag.current = openNewSessionFlag;
       setIsNewSessionOpen(true);
     }
   }, [openNewSessionFlag]);
@@ -115,7 +138,9 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
   const [meetingUrl, setMeetingUrl] = useState('');
   const [scheduledAt, setScheduledAt] = useState('');
   const [creating, setCreating] = useState(false);
+  const creatingRef = useRef(false);
   const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set());
+  const joiningSessionsRef = useRef<Set<string>>(new Set());
 
   // Scheduled sessions waiting to auto-join — restored from localStorage
   const [scheduledSessions, setScheduledSessions] = useState<ScheduledSession[]>(() => loadScheduled());
@@ -200,6 +225,7 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
   }, []);
 
   const handleCreateSession = async () => {
+    if (creatingRef.current) return;
     if (!meetingName.trim()) {
       toast.error('Please enter a meeting title');
       return;
@@ -228,6 +254,7 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
       }
     }
 
+    creatingRef.current = true;
     setCreating(true);
     try {
       const body: Record<string, string> = {
@@ -279,12 +306,15 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to create session');
     } finally {
+      creatingRef.current = false;
       setCreating(false);
     }
   };
 
   /** Manual "Join Now" for a scheduled session */
   const handleJoinNow = (entry: ScheduledSession) => {
+    if (joiningSessionsRef.current.has(entry.sessionId)) return;
+    joiningSessionsRef.current.add(entry.sessionId);
     // Cancel the timer
     const timer = scheduledTimersRef.current.get(entry.sessionId);
     if (timer) {
@@ -294,7 +324,8 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
     setScheduledSessions((prev) =>
       prev.map((s) => (s.sessionId === entry.sessionId ? { ...s, status: 'joining' as const } : s)),
     );
-    joinMeeting(entry.sessionId, entry.meetingUrl, entry.title, entry.meetingType);
+    joinMeeting(entry.sessionId, entry.meetingUrl, entry.title, entry.meetingType)
+      .finally(() => joiningSessionsRef.current.delete(entry.sessionId));
   };
 
   /** Cancel a scheduled session */

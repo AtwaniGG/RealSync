@@ -96,6 +96,8 @@ function GeneralSettings({ profilePhoto, onSaveProfilePhoto, userName, onSaveUse
   const [nameInput, setNameInput] = useState(userName || '');
   const [emailInput, setEmailInput] = useState(userEmail || '');
   const [isSaving, setIsSaving] = useState(false);
+  // I8: Prevent double-submission
+  const savingRef = useRef(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
@@ -156,6 +158,8 @@ function GeneralSettings({ profilePhoto, onSaveProfilePhoto, userName, onSaveUse
   };
 
   const handleSaveChanges = async () => {
+    // I8: Guard against concurrent submissions
+    if (savingRef.current) return;
     if (nameInput.trim().length > 100) {
       toast.error('Name must be 100 characters or less.');
       return;
@@ -166,6 +170,7 @@ function GeneralSettings({ profilePhoto, onSaveProfilePhoto, userName, onSaveUse
       return;
     }
 
+    savingRef.current = true;
     setIsSaving(true);
 
     try {
@@ -221,6 +226,7 @@ function GeneralSettings({ profilePhoto, onSaveProfilePhoto, userName, onSaveUse
     } catch {
       toast.error('Failed to save profile to server.');
     } finally {
+      savingRef.current = false;
       setIsSaving(false);
     }
   };

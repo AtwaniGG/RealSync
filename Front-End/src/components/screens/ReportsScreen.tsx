@@ -5,7 +5,7 @@ import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 import { Search, FileText, ArrowLeft, AlertTriangle, Clock, ShieldCheck, ShieldAlert, MessageSquare, Loader2, Download } from 'lucide-react';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { authFetch } from '../../lib/api';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import jsPDF from 'jspdf';
@@ -181,6 +181,7 @@ export function ReportsScreen({ onNavigate, onSignOut, profilePhoto, userName, u
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
+  const inflightReportRef = useRef<string | null>(null);
 
   // Fetch session list
   useEffect(() => {
@@ -203,6 +204,7 @@ export function ReportsScreen({ onNavigate, onSignOut, profilePhoto, userName, u
 
   // Fetch report detail for a session
   const openReport = useCallback(async (sessionId: string) => {
+    inflightReportRef.current = sessionId;
     setSelectedSessionId(sessionId);
     setDetailLoading(true);
     setReport(null);
@@ -215,6 +217,9 @@ export function ReportsScreen({ onNavigate, onSignOut, profilePhoto, userName, u
         authFetch(`/api/sessions/${sessionId}/alerts`),
         authFetch(`/api/sessions/${sessionId}/transcript`),
       ]);
+
+      // Abort if a newer report was requested while we were loading
+      if (inflightReportRef.current !== sessionId) return;
 
       if (reportRes.ok) {
         const reportData = await reportRes.json();
@@ -233,7 +238,10 @@ export function ReportsScreen({ onNavigate, onSignOut, profilePhoto, userName, u
     } catch {
       // Handle errors silently
     } finally {
-      setDetailLoading(false);
+      if (inflightReportRef.current === sessionId) {
+        setDetailLoading(false);
+        inflightReportRef.current = null;
+      }
     }
   }, []);
 

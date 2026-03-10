@@ -96,21 +96,24 @@ export function WebSocketProvider({ sessionId, children }: WebSocketProviderProp
         ws.onopen = async () => {
           if (!isActive) return;
           // Send auth token as first message (existing auth pattern)
+          let authOk = true;
           try {
             const token = await getAuthToken();
             if (token && ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'auth', token }));
             }
           } catch {
-            // Continue without auth in prototype mode
+            // Auth failed — close and let reconnect retry
+            authOk = false;
+            ws.close();
           }
-          if (ws.readyState === WebSocket.OPEN) {
+          if (authOk && ws.readyState === WebSocket.OPEN) {
             setIsConnected(true);
             lastMessageAt = Date.now();
             startHeartbeat();
+            // H19: Reset backoff on successful connect
+            reconnectDelayRef.current = 1000;
           }
-          // H19: Reset backoff on successful connect
-          reconnectDelayRef.current = 1000;
         };
 
         ws.onmessage = (event) => {
