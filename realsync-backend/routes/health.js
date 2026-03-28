@@ -24,10 +24,10 @@ router.get("/api/health", async (req, res) => {
   checks.supabase = persistence.isAvailable?.() !== false ? "ok" : "unavailable";
 
   const allOk = checks.ai === "ok" && checks.supabase === "ok";
-  const status = allOk ? 200 : 503;
 
-  res.status(status).json({
+  res.status(200).json({
     ok: allOk,
+    status: allOk ? "healthy" : "degraded",
     timestamp: new Date().toISOString(),
     checks,
   });
