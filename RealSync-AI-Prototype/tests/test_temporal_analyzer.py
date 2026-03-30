@@ -42,7 +42,7 @@ class TestEWMA:
 
     def test_ewma_decay_factor(self, analyzer):
         """Verify EWMA uses configured decay factor."""
-        assert TEMPORAL_EWMA_DECAY == 0.85
+        assert TEMPORAL_EWMA_DECAY == 0.90
 
 
 class TestTrend:
@@ -84,16 +84,16 @@ class TestVolatility:
 
 class TestAnomalyDetection:
     def test_sudden_trust_drop(self, analyzer):
-        """AI-TP-03: Sudden trust drop detected."""
+        """AI-TP-03: Sudden trust drop detected (threshold=0.40)."""
         for _ in range(5):
             analyzer.record_frame("s1", _frame(trust=0.85))
-        result = analyzer.record_frame("s1", _frame(trust=0.50))
+        result = analyzer.record_frame("s1", _frame(trust=0.40))
         anomaly_types = [a["type"] for a in result["anomalies"]]
         assert "sudden_trust_drop" in anomaly_types
 
     def test_emotion_instability(self, analyzer):
-        """AI-TP-05: Emotion instability with 5+ changes."""
-        emotions = ["Happy", "Angry", "Fear", "Neutral", "Sad", "Happy", "Angry"]
+        """AI-TP-05: Emotion instability with 10+ changes (threshold=10)."""
+        emotions = ["Happy", "Angry", "Fear", "Neutral", "Sad", "Happy", "Angry", "Fear", "Neutral", "Sad", "Happy"]
         for emotion in emotions:
             result = analyzer.record_frame("s1", _frame(emotion=emotion))
         anomaly_types = [a["type"] for a in result["anomalies"]]

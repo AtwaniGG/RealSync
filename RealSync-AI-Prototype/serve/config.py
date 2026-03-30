@@ -39,6 +39,9 @@ TEMPORAL_EMOTION_CHANGE_THRESHOLD = 10 # was 5; normal conversation = 5-8 emotio
 DEEPFAKE_AUTH_THRESHOLD_LOW_RISK = 0.70   # above → low risk
 DEEPFAKE_AUTH_THRESHOLD_HIGH_RISK = 0.40  # below → high risk (real faces now score ≥0.55)
 
+# Calibration bypass for local (non-Zoom) video testing
+DISABLE_ZOOM_CALIBRATION = os.getenv("DISABLE_ZOOM_CALIBRATION", "false").lower() == "true"
+
 # Emotion thresholds
 EMOTION_LABELS = ["Happy", "Neutral", "Angry", "Fear", "Surprise", "Sad"]
 

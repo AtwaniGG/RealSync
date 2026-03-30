@@ -54,8 +54,8 @@ def valid_audio_b64() -> str:
 
 @pytest.fixture
 def session_id() -> str:
-    """Generate a valid session ID."""
-    return f"test-{uuid.uuid4().hex[:12]}"
+    """Generate a valid session ID (must be UUID format for API validation)."""
+    return str(uuid.uuid4())
 
 
 @pytest.fixture

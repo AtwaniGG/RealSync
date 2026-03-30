@@ -3,7 +3,13 @@ import base64
 import struct
 import pytest
 
+from serve.audio_model import get_audio_model
 
+_audio_available = get_audio_model() is not None
+_skip_no_audio = pytest.mark.skipif(not _audio_available, reason="WavLM audio weights not available")
+
+
+@_skip_no_audio
 @pytest.mark.anyio
 async def test_audio_valid_input(client, valid_audio_b64, session_id):
     """AI-A-01: Valid PCM16 audio returns authenticityScore and model."""
@@ -23,6 +29,7 @@ async def test_audio_valid_input(client, valid_audio_b64, session_id):
         assert 0.0 <= audio["authenticityScore"] <= 1.0
 
 
+@_skip_no_audio
 @pytest.mark.anyio
 async def test_audio_short_input(client, session_id):
     """AI-A-02: Short audio (1 second, 16000 samples) is padded and processed."""

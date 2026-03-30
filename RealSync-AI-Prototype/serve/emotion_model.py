@@ -124,8 +124,8 @@ def get_emotion_model():
             net = EmotionNet(num_classes=7, backbone_name=backbone_name)
             state_dict = checkpoint.get("model_state_dict", checkpoint)
             net.load_state_dict(state_dict)
-            # Use MPS (Apple Silicon GPU) if available
-            _device = "mps" if torch.backends.mps.is_available() else "cpu"
+            # Use CUDA (NVIDIA GPU), MPS (Apple Silicon), or CPU
+            _device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
             net = net.to(_device)
             net.train(False)
             net._device = _device
