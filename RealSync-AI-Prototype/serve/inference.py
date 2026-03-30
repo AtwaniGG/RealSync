@@ -35,7 +35,6 @@ from serve.config import (
     EMOTION_LABELS,
     TRUST_WEIGHT_VIDEO,
     TRUST_WEIGHT_BEHAVIOR,
-    BEHAVIOR_BASELINE_SCALE,
     NO_FACE_THRESHOLD,
     NO_FACE_COUNTER_MAX,
     NO_FACE_EVICT_BATCH,
@@ -317,8 +316,8 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
     # Backend will merge audio signal and recompute final weighted trust
     audio_conf = None
     video_conf = effective_auth
-    # H10: Neutral baseline — range 0.5 (no confidence) to 1.0 (full confidence)
-    behavior_conf = round(BEHAVIOR_BASELINE_SCALE * (1.0 + emotion_conf), 4)
+    # H10: Neutral 0.5 baseline, full emotion range [0.0–1.0] scales remaining 0.5
+    behavior_conf = round(0.5 + emotion_conf * 0.5, 4)
 
     # Weighted trust (video + behavior) — no audio on AI side
     trust_score = round(

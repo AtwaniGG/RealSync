@@ -11,6 +11,7 @@ Run:
 Or:
     uvicorn serve.app:app --host 0.0.0.0 --port 5100 --reload
 """
+import hmac
 import re
 import sys
 import os
@@ -108,6 +109,10 @@ async def lifespan(app: FastAPI):
 
     print("[app] All models ready.")
     yield
+    # Graceful shutdown
+    from .inference import _inference_pool
+    _inference_pool.shutdown(wait=False)
+    print("[app] Inference thread pool shut down.")
 
 # ---------------------------------------------------------------
 # FastAPI app
@@ -148,7 +153,7 @@ async def api_key_auth(request: Request, call_next):
     if not AI_API_KEY or request.url.path == "/api/health" or request.method == "OPTIONS":
         return await call_next(request)
     provided = request.headers.get("X-API-Key", "")
-    if provided != AI_API_KEY:
+    if not hmac.compare_digest(provided, AI_API_KEY):
         return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key"})
     return await call_next(request)
 
