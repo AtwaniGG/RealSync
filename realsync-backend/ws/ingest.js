@@ -191,6 +191,9 @@ function attachIngestHandler(wssIngest) {
       broadcastToSession(session.id, alertPayload);
       session.alerts.push(alertPayload);
 
+      // Re-check: user may have ended session during broadcast
+      if (session.endedAt) return;
+
       // Auto-end the session
       session.endedAt = makeIso();
       session.stt?.end?.();

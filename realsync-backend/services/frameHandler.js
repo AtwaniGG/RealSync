@@ -160,26 +160,22 @@ async function handleFrame(session, message) {
       persistence.insertAlert(session.id, ta).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
     }
 
-    // Recompute trust score with audio signal if available
-    if (result?.aggregated?.trustScore != null) {
+    // C5 fix: Always compute trust from raw deepfake authenticityScore to avoid
+    // double-counting signals that are baked into the AI service's composite trustScore.
+    const rawVideoScore = result?.aggregated?.deepfake?.authenticityScore;
+    if (rawVideoScore != null) {
       const audioScore = session.audioAuthenticityScore;
       const behaviorConf = result.aggregated.confidenceLayers?.behavior || 0.55;
 
       let finalTrust;
       if (AUDIO_DEEPFAKE_ENABLED && audioScore != null) {
         // 3-signal weighted: video=0.45, audio=0.35, behavior=0.20
-        const videoSignal = result.aggregated.deepfake?.authenticityScore ?? 0.5;
-        finalTrust = 0.45 * videoSignal + 0.35 * audioScore + 0.20 * behaviorConf;
-        session.metrics.trustScore = Math.max(0, Math.min(1, parseFloat(finalTrust.toFixed(4))));
-      } else if (result.aggregated.trustScore != null) {
-        // Use AI service's pre-computed trust score directly
-        session.metrics.trustScore = Math.max(0, Math.min(1, parseFloat(result.aggregated.trustScore.toFixed(4))));
+        finalTrust = 0.45 * rawVideoScore + 0.35 * audioScore + 0.20 * behaviorConf;
       } else {
-        // Fallback: 2-signal (no audio): video=0.55, behavior=0.45
-        const videoSignal = result.aggregated.deepfake?.authenticityScore ?? 0.5;
-        finalTrust = 0.55 * videoSignal + 0.45 * behaviorConf;
-        session.metrics.trustScore = Math.max(0, Math.min(1, parseFloat(finalTrust.toFixed(4))));
+        // 2-signal (no audio): video=0.55, behavior=0.45
+        finalTrust = 0.55 * rawVideoScore + 0.45 * behaviorConf;
       }
+      session.metrics.trustScore = Math.max(0, Math.min(1, parseFloat(finalTrust.toFixed(4))));
     }
 
     // H7: Broadcast metrics AFTER trust recomputation so clients get audio-corrected values
