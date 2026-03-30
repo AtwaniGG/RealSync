@@ -112,7 +112,7 @@ def get_audio_model():
                 return None
 
             net.train(False)
-            _device = "mps" if torch.backends.mps.is_available() else "cpu"
+            _device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
             net = net.to(_device)
             net._device = _device
             _model = net

@@ -64,8 +64,8 @@ PATIENCE = 5
 CODEC_AUG_PROB = 0.5  # Probability of applying codec augmentation per sample
 
 DEVICE = (
-    "mps" if torch.backends.mps.is_available()
-    else "cuda" if torch.cuda.is_available()
+    "cuda" if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available()
     else "cpu"
 )
 
@@ -600,7 +600,9 @@ def train(args):
                 break
 
         gc.collect()
-        if DEVICE == "mps":
+        if DEVICE == "cuda":
+            torch.cuda.empty_cache()
+        elif DEVICE == "mps":
             torch.mps.empty_cache()
 
     print(f"\nBest Val Loss: {best_val_loss:.4f}")

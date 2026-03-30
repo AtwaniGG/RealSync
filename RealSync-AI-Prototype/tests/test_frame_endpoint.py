@@ -19,7 +19,6 @@ async def test_frame_valid_input(client, valid_jpeg_b64, session_id):
     assert "aggregated" in data
     agg = data["aggregated"]
     assert "emotion" in agg
-    assert "identity" in agg
     assert "deepfake" in agg
     # trustScore can be None (no face) or float
     if agg.get("trustScore") is not None:
@@ -102,12 +101,9 @@ async def test_frame_camera_off_detection(client, session_id, valid_jpeg_b64):
 
 @pytest.mark.anyio
 async def test_frame_session_id_validation(client, valid_jpeg_b64):
-    """AI-F-11: Path traversal in sessionId returns empty response."""
+    """AI-F-11: Path traversal in sessionId returns 400 (invalid UUID)."""
     resp = await client.post("/api/analyze/frame", json={
         "sessionId": "../../etc/passwd",
         "frameB64": valid_jpeg_b64,
     })
-    assert resp.status_code == 200
-    data = resp.json()
-    # Invalid session ID should be caught by validation
-    assert data["sessionId"] == "invalid" or data["faces"] == []
+    assert resp.status_code == 400

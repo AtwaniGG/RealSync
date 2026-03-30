@@ -23,6 +23,7 @@ from serve.config import (
     EFFICIENTNET_WEIGHTS_PATH,
     DEEPFAKE_AUTH_THRESHOLD_LOW_RISK,
     DEEPFAKE_AUTH_THRESHOLD_HIGH_RISK,
+    DISABLE_ZOOM_CALIBRATION,
 )
 
 MODEL_NAME = "EfficientNet-B4-SBI"
@@ -88,8 +89,8 @@ def get_deepfake_model():
                 _model = _LOAD_FAILED
                 return None
 
-            # Use MPS (Apple Silicon GPU) if available for faster inference
-            _device = "mps" if torch.backends.mps.is_available() else "cpu"
+            # Use CUDA (NVIDIA GPU), MPS (Apple Silicon), or CPU
+            _device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
             net = net.to(_device)
             net.train(False)
             net._device = _device
@@ -139,16 +140,22 @@ def predict_deepfake(face_crop_bgr: np.ndarray) -> dict:
         # genuine deepfakes (raw < 0.01) to score low.
         raw_authenticity = 1.0 - prediction
 
-        # I1: Sigmoid rescale — gradual curve to reduce jitter from Zoom compression.
-        # Actual Zoom real-face raw_auth: 0.0001–0.007 (median 0.003, p95 0.14).
-        # Zoom double-compression makes model score real faces near 0.
-        # center=0.003, steepness=300: maps median real face to 0.73 (low risk);
-        # even worst-case real frames (0.0001) score 0.63 (above alert thresholds).
-        calibrated = 1.0 / (1.0 + math.exp(-300 * (raw_authenticity - 0.003)))
-        calibrated = 0.50 + calibrated * 0.45
+        if DISABLE_ZOOM_CALIBRATION:
+            # Direct mode: use raw authenticity without Zoom compression calibration.
+            # Use this for locally-generated deepfake testing (not Zoom-captured video).
+            print(f"[deepfake] raw_prediction={prediction:.4f} raw_auth={raw_authenticity:.4f} (calibration disabled)", flush=True)
+            authenticity = round(max(0.0, min(1.0, raw_authenticity)), 4)
+        else:
+            # I1: Sigmoid rescale — gradual curve to reduce jitter from Zoom compression.
+            # Actual Zoom real-face raw_auth: 0.0001–0.007 (median 0.003, p95 0.14).
+            # Zoom double-compression makes model score real faces near 0.
+            # center=0.003, steepness=300: maps median real face to 0.73 (low risk);
+            # even worst-case real frames (0.0001) score 0.63 (above alert thresholds).
+            calibrated = 1.0 / (1.0 + math.exp(-300 * (raw_authenticity - 0.003)))
+            calibrated = 0.50 + calibrated * 0.45
 
-        print(f"[deepfake] raw_prediction={prediction:.4f} raw_auth={raw_authenticity:.4f} calibrated={calibrated:.4f}", flush=True)
-        authenticity = round(max(0.0, min(1.0, calibrated)), 4)
+            print(f"[deepfake] raw_prediction={prediction:.4f} raw_auth={raw_authenticity:.4f} calibrated={calibrated:.4f}", flush=True)
+            authenticity = round(max(0.0, min(1.0, calibrated)), 4)
 
         if authenticity > DEEPFAKE_AUTH_THRESHOLD_LOW_RISK:
             risk = "low"

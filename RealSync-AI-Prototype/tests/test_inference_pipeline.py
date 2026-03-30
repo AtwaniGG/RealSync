@@ -5,7 +5,7 @@ import numpy as np
 import cv2
 
 from serve.inference import decode_frame, analyze_frame, cleanup_session
-from serve.config import TRUST_WEIGHT_VIDEO, TRUST_WEIGHT_IDENTITY, TRUST_WEIGHT_BEHAVIOR, BEHAVIOR_BASELINE_SCALE
+from serve.config import TRUST_WEIGHT_VIDEO, TRUST_WEIGHT_BEHAVIOR, BEHAVIOR_BASELINE_SCALE
 
 
 class TestDecodeFrame:
@@ -95,26 +95,22 @@ class TestTrustScoreFormula:
     def test_trust_formula_calculation(self):
         """AI-P-04: Verify trust score formula with known values."""
         auth_score = 0.9
-        shift = 0.1
         emotion_conf = 0.8
 
-        identity_signal = 1.0 - shift
         behavior_conf = BEHAVIOR_BASELINE_SCALE * (1.0 + emotion_conf)
         expected = (
             TRUST_WEIGHT_VIDEO * auth_score
-            + TRUST_WEIGHT_IDENTITY * identity_signal
             + TRUST_WEIGHT_BEHAVIOR * behavior_conf
         )
         expected = max(0.0, min(1.0, expected))
 
         # Verify the formula components
-        assert abs(TRUST_WEIGHT_VIDEO - 0.47) < 0.01
-        assert abs(TRUST_WEIGHT_IDENTITY - 0.33) < 0.01
-        assert abs(TRUST_WEIGHT_BEHAVIOR - 0.20) < 0.01
+        assert abs(TRUST_WEIGHT_VIDEO - 0.55) < 0.01
+        assert abs(TRUST_WEIGHT_BEHAVIOR - 0.45) < 0.01
         assert abs(BEHAVIOR_BASELINE_SCALE - 0.5) < 0.01
 
         # behavior_conf = 0.5 * (1.0 + 0.8) = 0.9
         assert abs(behavior_conf - 0.9) < 0.01
 
-        # trust = 0.47*0.9 + 0.33*0.9 + 0.20*0.9 = 0.423 + 0.297 + 0.18 = 0.9
+        # trust = 0.55*0.9 + 0.45*0.9 = 0.495 + 0.405 = 0.9
         assert abs(expected - 0.9) < 0.01
