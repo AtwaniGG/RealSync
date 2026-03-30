@@ -242,6 +242,10 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
 
     Returns response matching contracts/ai-inference.schema.json
     """
+    # M3: Evict stale no-face counters if dict grows beyond session eviction point
+    if len(_no_face_counters) > 100:
+        _no_face_counters.clear()
+
     # H13: Validate sessionId
     if not session_id or len(session_id) > 64 or not re.match(r'^[a-zA-Z0-9_-]+$', session_id):
         return _empty_response('invalid', captured_at)

@@ -230,9 +230,8 @@ async def analyze_frame_endpoint(request: Request, payload: AnalyzeFrameRequest)
     if not payload.sessionId or not _UUID_RE.match(payload.sessionId):
         raise HTTPException(status_code=400, detail="sessionId must be a valid UUID")
 
-    # Reject oversized frame payloads (2MB base64 ≈ 1.5MB decoded)
-    if len(payload.frameB64) > 2 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="frameB64 payload exceeds 2MB limit")
+    if len(payload.frameB64 or "") > 10_000_000:  # ~7.5MB decoded
+        return JSONResponse(status_code=413, content={"detail": "Frame payload too large"})
 
     # Atomic try-acquire: non-blocking attempt avoids TOCTOU race
     acquired = False
@@ -271,9 +270,8 @@ async def analyze_audio_endpoint(request: Request, payload: AnalyzeAudioRequest)
         raise HTTPException(status_code=400, detail="audioB64 is required")
     if not payload.sessionId or not _UUID_RE.match(payload.sessionId):
         raise HTTPException(status_code=400, detail="sessionId must be a valid UUID")
-    # M5: Reject oversized audio payloads (4MB base64 ≈ 3MB decoded)
-    if len(payload.audioB64) > 4 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="audioB64 payload exceeds 4MB limit")
+    if len(payload.audioB64 or "") > 5_000_000:  # ~3.75MB decoded
+        return JSONResponse(status_code=413, content={"detail": "Audio payload too large"})
 
     try:
         result = await asyncio.wait_for(

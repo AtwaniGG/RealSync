@@ -120,7 +120,7 @@ async function handleFrame(session, message) {
     visualAlerts.forEach((alert) => {
       alert.recommendation = getRecommendation(alert.category, alert.severity);
       session.alerts.push(alert);
-      if (session.alerts.length > 500) session.alerts.shift();
+      if (session.alerts.length > 200) { session.alerts = session.alerts.slice(-200); }
       broadcastToSession(session.id, { type: "alert", ...alert });
       persistence.insertAlert(session.id, alert).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
     });
@@ -144,7 +144,7 @@ async function handleFrame(session, message) {
       faceAlerts.forEach((alert) => {
         alert.recommendation = getRecommendation(alert.category, alert.severity);
         session.alerts.push(alert);
-        if (session.alerts.length > 500) session.alerts.shift();
+        if (session.alerts.length > 200) { session.alerts = session.alerts.slice(-200); }
         broadcastToSession(session.id, { type: "alert", ...alert });
         persistence.insertAlert(session.id, alert).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
       });
@@ -155,7 +155,7 @@ async function handleFrame(session, message) {
     for (const ta of temporalAlerts) {
       ta.recommendation = getRecommendation(ta.category, ta.severity);
       session.alerts.push(ta);
-      if (session.alerts.length > 500) session.alerts.shift();
+      if (session.alerts.length > 200) { session.alerts = session.alerts.slice(-200); }
       broadcastToSession(session.id, { type: "alert", ...ta });
       persistence.insertAlert(session.id, ta).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
     }
