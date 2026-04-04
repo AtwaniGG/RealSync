@@ -35,7 +35,6 @@ from serve.config import (
     EMOTION_LABELS,
     TRUST_WEIGHT_VIDEO,
     TRUST_WEIGHT_BEHAVIOR,
-    BEHAVIOR_BASELINE_SCALE,
     NO_FACE_THRESHOLD,
     NO_FACE_COUNTER_MAX,
     NO_FACE_EVICT_BATCH,
@@ -44,6 +43,10 @@ from serve.config import (
 from serve.temporal_analyzer import TemporalAnalyzer
 from serve.emotion_model import predict_emotion, get_emotion_model
 from serve.deepfake_model import predict_deepfake, get_deepfake_model
+from serve.community_vit_model import predict_community_vit, get_community_vit_model
+from serve.heuristic_analyzer import analyze_heuristics
+from serve.ensemble_scorer import compute_ensemble_score
+from serve.config import DISABLE_ZOOM_CALIBRATION
 
 
 # ---------------------------------------------------------------
@@ -243,6 +246,10 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
 
     Returns response matching contracts/ai-inference.schema.json
     """
+    # M3: Evict stale no-face counters if dict grows beyond session eviction point
+    if len(_no_face_counters) > 100:
+        _no_face_counters.clear()
+
     # H13: Validate sessionId
     if not session_id or len(session_id) > 64 or not re.match(r'^[a-zA-Z0-9_-]+$', session_id):
         return _empty_response('invalid', captured_at)
@@ -279,14 +286,18 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
         face_id = face_info["face_id"]
         deepfake_crop = face_info.get("crop_original", crop)
 
-        # Run deepfake and emotion in parallel (independent models)
+        # Run deepfake, emotion, heuristic, and ViT analysis in parallel
         # I2: Reuse module-level thread pool instead of creating per-face
         df_future = _inference_pool.submit(analyze_deepfake, deepfake_crop)
         em_future = _inference_pool.submit(analyze_emotion, crop)
+        heuristic_future = _inference_pool.submit(analyze_heuristics, deepfake_crop)
+        vit_future = _inference_pool.submit(predict_community_vit, deepfake_crop)
         # Await each future individually so a single timeout doesn't discard
         # already-completed results, and cancel remaining futures on timeout.
         deepfake_result = {"authenticityScore": None, "riskLevel": "unknown", "model": "timeout"}
         emotion_result = {"label": "Neutral", "confidence": 0.0, "scores": {}}
+        heuristic_result = {"heuristicScore": None, "heuristicRiskLevel": "unknown"}
+        vit_result = {"authenticityScore": None, "riskLevel": "unknown", "model": "timeout"}
         try:
             deepfake_result = df_future.result(timeout=30)
         except FuturesTimeoutError:
@@ -296,13 +307,28 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
             emotion_result = em_future.result(timeout=30)
         except FuturesTimeoutError:
             print(f"[inference] Emotion model timed out for session {session_id}")
+        try:
+            heuristic_result = heuristic_future.result(timeout=10)
+        except FuturesTimeoutError:
+            print(f"[inference] Heuristic analysis timed out for session {session_id}")
+        try:
+            vit_result = vit_future.result(timeout=30)
+        except FuturesTimeoutError:
+            print(f"[inference] CommunityForensics ViT timed out for session {session_id}")
+
+        # Ensemble: combine EfficientNet + ViT + heuristic scores
+        ensemble_result = compute_ensemble_score(
+            deepfake_result, heuristic_result,
+            zoom_mode=not DISABLE_ZOOM_CALIBRATION,
+            vit_result=vit_result,
+        )
 
         face_results.append({
             "faceId": face_id,
             "bbox": face_info["bbox"],
             "confidence": face_info["confidence"],
             "emotion": emotion_result,
-            "deepfake": deepfake_result,
+            "deepfake": ensemble_result,
         })
 
     # Aggregate: use the first (most prominent) face for session-level metrics
@@ -317,8 +343,8 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
     # Backend will merge audio signal and recompute final weighted trust
     audio_conf = None
     video_conf = effective_auth
-    # H10: Neutral baseline — range 0.5 (no confidence) to 1.0 (full confidence)
-    behavior_conf = round(BEHAVIOR_BASELINE_SCALE * (1.0 + emotion_conf), 4)
+    # H10: Neutral 0.5 baseline, full emotion range [0.0–1.0] scales remaining 0.5
+    behavior_conf = round(0.5 + emotion_conf * 0.5, 4)
 
     # Weighted trust (video + behavior) — no audio on AI side
     trust_score = round(
