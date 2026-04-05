@@ -42,6 +42,20 @@ DEEPFAKE_AUTH_THRESHOLD_HIGH_RISK = 0.40  # below → high risk (real faces now 
 # Calibration bypass for local (non-Zoom) video testing
 DISABLE_ZOOM_CALIBRATION = os.getenv("DISABLE_ZOOM_CALIBRATION", "false").lower() == "true"
 
+# --- Heuristic Analyzer Thresholds ---
+# Calibrated from 5K real + 5K fake 256x256 face crops (30% MediaPipe padding)
+HEURISTIC_HIGH_FREQ_THRESHOLD = 0.005   # actual high_freq_ratio range: 0.002-0.004
+HEURISTIC_BOUNDARY_RATIO_THRESHOLD = 2.0  # boundary_to_interior typically 0.4-0.9
+HEURISTIC_BLUR_DEVIATION_THRESHOLD = 0.6  # blur_ratio deviation from 1.0
+HEURISTIC_COLOR_DISTANCE_THRESHOLD = 35.0  # face-to-border Lab distance (padded crops: 20-30 is normal)
+
+# --- Ensemble Scoring Weights ---
+ENSEMBLE_MODEL_WEIGHT_ZOOM = 0.50       # model weight when Zoom calibration is ON
+ENSEMBLE_HEURISTIC_WEIGHT_ZOOM = 0.50   # heuristic weight when Zoom calibration is ON
+ENSEMBLE_MODEL_WEIGHT_CLEAN = 0.65      # model weight for clean (non-Zoom) video
+ENSEMBLE_HEURISTIC_WEIGHT_CLEAN = 0.35  # heuristic weight for clean video
+ENSEMBLE_DISAGREEMENT_THRESHOLD = 0.35  # if |model - heuristic| exceeds this, reduce model weight
+
 # Emotion thresholds
 EMOTION_LABELS = ["Happy", "Neutral", "Angry", "Fear", "Surprise", "Sad"]
 
