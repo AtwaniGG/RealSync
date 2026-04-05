@@ -55,19 +55,6 @@ ENDPOINTS = {
         "url": "/api/analyze/audio",
         "json": lambda: {"sessionId": SESSION_ID, "audioB64": _make_audio_b64()},
     },
-    "text": {
-        "method": "POST",
-        "url": "/api/analyze/text",
-        "json": lambda: {
-            "sessionId": SESSION_ID,
-            "text": "Please send me your verification code immediately, it's urgent.",
-        },
-    },
-    "transcribe": {
-        "method": "POST",
-        "url": "/api/transcribe",
-        "json": lambda: {"sessionId": SESSION_ID, "audioB64": _make_audio_b64(2)},
-    },
 }
 
 
