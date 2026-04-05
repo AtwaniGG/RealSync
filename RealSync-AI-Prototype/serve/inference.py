@@ -1,9 +1,8 @@
 """
 Per-frame inference pipeline for the RealSync AI Inference Service.
 
-Takes a single JPEG frame, detects faces, runs deepfake + emotion analysis
-on each face, tracks identity, and returns a response matching the
-contracts/ai-inference.schema.json contract.
+Takes a single JPEG frame, detects faces, runs CLIP deepfake detection
++ emotion analysis, feeds scores to SPRT accumulator and temporal analyzer.
 """
 import sys
 import os
@@ -23,7 +22,6 @@ def _utcnow_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-# Add the src directory to path so we can import existing models
 SRC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
@@ -39,39 +37,29 @@ from serve.config import (
     NO_FACE_COUNTER_MAX,
     NO_FACE_EVICT_BATCH,
     TEMPORAL_SMOOTHING_MIN_FRAMES,
+    INFERENCE_TIMEOUT_S,
 )
 from serve.temporal_analyzer import TemporalAnalyzer
 from serve.emotion_model import predict_emotion, get_emotion_model
-from serve.deepfake_model import predict_deepfake, get_deepfake_model
-from serve.community_vit_model import predict_community_vit, get_community_vit_model
-from serve.heuristic_analyzer import analyze_heuristics
-from serve.ensemble_scorer import compute_ensemble_score
-from serve.config import DISABLE_ZOOM_CALIBRATION
+from serve.clip_deepfake_model import predict_clip_deepfake, get_clip_deepfake_model
+from serve.sprt_detector import SPRTDetector
 
 
 # ---------------------------------------------------------------
-# Lazy-loaded models (loaded once on first call)
+# Module-level state
 # ---------------------------------------------------------------
 
-# I2: Module-level thread pool — avoids creating/destroying threads per face
-_inference_pool = ThreadPoolExecutor(max_workers=3)
-
+_inference_pool = ThreadPoolExecutor(max_workers=2)
 _temporal_analyzer = TemporalAnalyzer(window_size=15)
+_sprt = SPRTDetector()
 
-# Camera-off tracking: consecutive no-face frames per session
 _no_face_counters: Dict[str, int] = {}
-
-# Per-thread MediaPipe face detector (avoids global lock serialization)
 _thread_local = threading.local()
 _no_face_lock = threading.Lock()
 
 
 def _get_face_detector():
-    """Load MediaPipe face detector (lazy, per-thread to avoid serialization).
-
-    Uses the Tasks API (mediapipe >= 0.10.28) which replaced mp.solutions.
-    Caches a sentinel value (False) on failure so we don't retry every frame.
-    """
+    """Load MediaPipe face detector (lazy, per-thread)."""
     detector = getattr(_thread_local, "face_detector", None)
     if detector is not None:
         return detector if detector is not False else None
@@ -79,7 +67,6 @@ def _get_face_detector():
         import mediapipe as mp
         from mediapipe.tasks.python import BaseOptions, vision
 
-        # Model file path — downloaded blaze_face_short_range.tflite
         model_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
             "src", "models", "blaze_face_short_range.tflite",
@@ -101,15 +88,14 @@ def _get_face_detector():
 
 
 def get_temporal_analyzer() -> TemporalAnalyzer:
-    """Return the global temporal analyzer instance."""
     return _temporal_analyzer
 
 
 def cleanup_session(session_id: str):
-    """Clean up all per-session state (no-face counters, temporal)."""
     with _no_face_lock:
         _no_face_counters.pop(session_id, None)
     _temporal_analyzer.clear_session(session_id)
+    _sprt.clear_session(session_id)
 
 
 # ---------------------------------------------------------------
@@ -117,11 +103,10 @@ def cleanup_session(session_id: str):
 # ---------------------------------------------------------------
 
 def decode_frame(frame_b64: str) -> Optional[np.ndarray]:
-    """Decode a base64-encoded JPEG into a BGR numpy array."""
+    """Decode a base64-encoded image (JPEG or PNG) into a BGR numpy array."""
     try:
-        # Reject oversized payloads (2MB base64 ≈ 1.5MB decoded, matches endpoint limit)
-        if len(frame_b64) > 2 * 1024 * 1024:
-            print("[inference] Frame rejected: base64 payload exceeds 2MB limit")
+        if len(frame_b64) > 10 * 1024 * 1024:  # 10MB limit for PNG frames
+            print("[inference] Frame rejected: payload exceeds 10MB limit")
             return None
         img_bytes = base64.b64decode(frame_b64, validate=True)
         nparr = np.frombuffer(img_bytes, np.uint8)
@@ -142,17 +127,7 @@ def decode_frame(frame_b64: str) -> Optional[np.ndarray]:
 # ---------------------------------------------------------------
 
 def detect_faces(img: np.ndarray) -> List[Dict]:
-    """
-    Detect faces in an image using MediaPipe Tasks API.
-
-    Returns list of dicts:
-        {
-            "face_id": int,
-            "bbox": {"x": int, "y": int, "w": int, "h": int},
-            "confidence": float,
-            "crop": np.ndarray (224x224 BGR)
-        }
-    """
+    """Detect faces using MediaPipe Tasks API."""
     detector = _get_face_detector()
     if detector is None:
         return []
@@ -160,7 +135,6 @@ def detect_faces(img: np.ndarray) -> List[Dict]:
     h, w, _ = img.shape
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    # Tasks API requires mediapipe.Image wrapper
     import mediapipe as mp
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
     results = detector.detect(mp_image)
@@ -170,19 +144,13 @@ def detect_faces(img: np.ndarray) -> List[Dict]:
         return faces
 
     for i, det in enumerate(results.detections):
-        # Tasks API: categories list with score
         confidence = det.categories[0].score if det.categories else 0.0
         if confidence < FACE_CONFIDENCE_THRESHOLD:
             continue
 
-        # Tasks API: bounding_box has origin_x, origin_y, width, height in pixels
         box = det.bounding_box
-        x = box.origin_x
-        y = box.origin_y
-        bw = box.width
-        bh = box.height
+        x, y, bw, bh = box.origin_x, box.origin_y, box.width, box.height
 
-        # Add padding
         pad_w = int(bw * FACE_PADDING_PERCENT)
         pad_h = int(bh * FACE_PADDING_PERCENT)
         x1 = max(0, x - pad_w)
@@ -200,35 +168,11 @@ def detect_faces(img: np.ndarray) -> List[Dict]:
             "face_id": i,
             "bbox": {"x": x, "y": y, "w": bw, "h": bh},
             "confidence": round(float(confidence), 4),
-            "crop": crop_resized,           # 224x224 (backward compat)
-            "crop_original": crop,          # original size, each model resizes as needed
+            "crop": crop_resized,
+            "crop_original": crop,
         })
 
     return faces
-
-
-# ---------------------------------------------------------------
-# Per-face analysis
-# ---------------------------------------------------------------
-
-def analyze_deepfake(face_crop: np.ndarray) -> Dict:
-    """
-    Run EfficientNet-B4+SBI deepfake detection on a face crop.
-
-    Returns:
-        {"authenticityScore": float, "riskLevel": str, "model": str}
-    """
-    return predict_deepfake(face_crop)
-
-
-def analyze_emotion(face_crop: np.ndarray) -> Dict:
-    """
-    Run MobileNetV2 emotion recognition on a face crop.
-
-    Returns:
-        {"label": str, "confidence": float, "scores": {label: float}}
-    """
-    return predict_emotion(face_crop)
 
 
 # ---------------------------------------------------------------
@@ -239,18 +183,16 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
     """
     Full analysis pipeline for a single frame.
 
-    1. Decode JPEG from base64
+    1. Decode image from base64
     2. Detect faces
-    3. For each face: deepfake + emotion + identity
-    4. Aggregate results
-
-    Returns response matching contracts/ai-inference.schema.json
+    3. For each face: CLIP deepfake + emotion (parallel)
+    4. Feed CLIP score to SPRT accumulator
+    5. Temporal smoothing
+    6. Return response
     """
-    # M3: Evict stale no-face counters if dict grows beyond session eviction point
     if len(_no_face_counters) > 100:
         _no_face_counters.clear()
 
-    # H13: Validate sessionId
     if not session_id or len(session_id) > 64 or not re.match(r'^[a-zA-Z0-9_-]+$', session_id):
         return _empty_response('invalid', captured_at)
 
@@ -262,9 +204,7 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
 
     faces = detect_faces(img)
     if len(faces) == 0:
-        # Track consecutive no-face frames for camera-off detection
         with _no_face_lock:
-            # I3: Evict oldest half of counters if unbounded growth exceeds 500 entries
             if len(_no_face_counters) > NO_FACE_COUNTER_MAX:
                 keys = list(_no_face_counters.keys())
                 for k in keys[:NO_FACE_EVICT_BATCH]:
@@ -275,85 +215,61 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
             return _camera_off_response(session_id, captured_at)
         return _empty_response(session_id, captured_at)
 
-    # Face detected — remove counter instead of resetting to 0
-    # to avoid accumulating stale entries for sessions that always have a face
     with _no_face_lock:
         _no_face_counters.pop(session_id, None)
 
     face_results = []
     for face_info in faces:
         crop = face_info["crop"]
-        face_id = face_info["face_id"]
         deepfake_crop = face_info.get("crop_original", crop)
 
-        # Run deepfake, emotion, heuristic, and ViT analysis in parallel
-        # I2: Reuse module-level thread pool instead of creating per-face
-        df_future = _inference_pool.submit(analyze_deepfake, deepfake_crop)
-        em_future = _inference_pool.submit(analyze_emotion, crop)
-        heuristic_future = _inference_pool.submit(analyze_heuristics, deepfake_crop)
-        vit_future = _inference_pool.submit(predict_community_vit, deepfake_crop)
-        # Await each future individually so a single timeout doesn't discard
-        # already-completed results, and cancel remaining futures on timeout.
-        deepfake_result = {"authenticityScore": None, "riskLevel": "unknown", "model": "timeout"}
+        # Run CLIP deepfake + emotion in parallel
+        clip_future = _inference_pool.submit(predict_clip_deepfake, deepfake_crop)
+        emo_future = _inference_pool.submit(predict_emotion, crop)
+
+        clip_result = {"authenticityScore": None, "riskLevel": "unknown", "model": "timeout"}
         emotion_result = {"label": "Neutral", "confidence": 0.0, "scores": {}}
-        heuristic_result = {"heuristicScore": None, "heuristicRiskLevel": "unknown"}
-        vit_result = {"authenticityScore": None, "riskLevel": "unknown", "model": "timeout"}
+
         try:
-            deepfake_result = df_future.result(timeout=30)
+            clip_result = clip_future.result(timeout=INFERENCE_TIMEOUT_S)
         except FuturesTimeoutError:
-            print(f"[inference] Deepfake model timed out for session {session_id}")
-            em_future.cancel()
+            print(f"[inference] CLIP model timed out for session {session_id}")
+
         try:
-            emotion_result = em_future.result(timeout=30)
+            emotion_result = emo_future.result(timeout=INFERENCE_TIMEOUT_S)
         except FuturesTimeoutError:
             print(f"[inference] Emotion model timed out for session {session_id}")
-        try:
-            heuristic_result = heuristic_future.result(timeout=10)
-        except FuturesTimeoutError:
-            print(f"[inference] Heuristic analysis timed out for session {session_id}")
-        try:
-            vit_result = vit_future.result(timeout=30)
-        except FuturesTimeoutError:
-            print(f"[inference] CommunityForensics ViT timed out for session {session_id}")
-
-        # Ensemble: combine EfficientNet + ViT + heuristic scores
-        ensemble_result = compute_ensemble_score(
-            deepfake_result, heuristic_result,
-            zoom_mode=not DISABLE_ZOOM_CALIBRATION,
-            vit_result=vit_result,
-        )
 
         face_results.append({
-            "faceId": face_id,
+            "faceId": face_info["face_id"],
             "bbox": face_info["bbox"],
             "confidence": face_info["confidence"],
             "emotion": emotion_result,
-            "deepfake": ensemble_result,
+            "deepfake": clip_result,
         })
 
-    # Aggregate: use the first (most prominent) face for session-level metrics
+    # Aggregate: primary face
     primary = face_results[0]
 
-    # Compute trust score from aggregated signals
     auth_score = primary["deepfake"]["authenticityScore"]
     effective_auth = auth_score if auth_score is not None else 0.5
     emotion_conf = primary["emotion"]["confidence"]
 
-    # Audio comes from a separate endpoint — AI service computes partial trust
-    # Backend will merge audio signal and recompute final weighted trust
+    # Feed to SPRT
+    sprt_result = _sprt.update(session_id, auth_score)
+
+    # Trust score
     audio_conf = None
     video_conf = effective_auth
-    # H10: Neutral 0.5 baseline, full emotion range [0.0–1.0] scales remaining 0.5
     behavior_conf = round(0.5 + emotion_conf * 0.5, 4)
 
-    # Weighted trust (video + behavior) — no audio on AI side
     trust_score = round(
         TRUST_WEIGHT_VIDEO * effective_auth + TRUST_WEIGHT_BEHAVIOR * behavior_conf,
         4,
     )
     trust_score = max(0.0, min(1.0, trust_score))
 
-    # Temporal analysis: smooth trust scores across frames
+    # Temporal smoothing
     temporal_input = {
         "trustScore": trust_score,
         "authenticityScore": effective_auth,
@@ -361,13 +277,12 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
     }
     temporal = _temporal_analyzer.record_frame(session_id, temporal_input)
 
-    # Use smoothed trust score once we have 3+ frames of history
     if temporal["frameCount"] >= TEMPORAL_SMOOTHING_MIN_FRAMES:
         trust_score = temporal["smoothedTrustScore"]
 
     processed_at = _utcnow_iso()
     elapsed_ms = round((time.time() - start_time) * 1000, 1)
-    print(f"[inference] Frame analyzed in {elapsed_ms}ms — {len(faces)} face(s)")
+    print(f"[inference] Frame analyzed in {elapsed_ms}ms — {len(faces)} face(s), SPRT: {sprt_result['decision']}")
 
     return {
         "sessionId": session_id,
@@ -378,6 +293,7 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
             "emotion": primary["emotion"],
             "deepfake": primary["deepfake"],
             "trustScore": trust_score,
+            "sprt": sprt_result,
             "confidenceLayers": {
                 "audio": audio_conf,
                 "video": video_conf,
@@ -389,7 +305,6 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
 
 
 def _empty_response(session_id: str, captured_at: str = None) -> Dict:
-    """Return a response when no faces are detected (transient — not yet camera-off)."""
     now = _utcnow_iso()
     return {
         "sessionId": session_id,
@@ -405,10 +320,11 @@ def _empty_response(session_id: str, captured_at: str = None) -> Dict:
             "deepfake": {
                 "authenticityScore": 1.0,
                 "riskLevel": "low",
-                "model": "EfficientNet-B4-SBI",
+                "model": "no-face",
             },
             "trustScore": None,
             "noFaceDetected": True,
+            "sprt": None,
             "confidenceLayers": {
                 "audio": None,
                 "video": None,
@@ -420,7 +336,6 @@ def _empty_response(session_id: str, captured_at: str = None) -> Dict:
 
 
 def _camera_off_response(session_id: str, captured_at: str = None) -> Dict:
-    """Return a response when camera is off (5+ consecutive no-face frames)."""
     now = _utcnow_iso()
     return {
         "sessionId": session_id,
@@ -441,6 +356,7 @@ def _camera_off_response(session_id: str, captured_at: str = None) -> Dict:
             "trustScore": None,
             "cameraOff": True,
             "noFaceDetected": True,
+            "sprt": None,
             "confidenceLayers": {
                 "audio": None,
                 "video": None,

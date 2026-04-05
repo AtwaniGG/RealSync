@@ -27,8 +27,8 @@ class TestDecodeFrame:
         assert result is None
 
     def test_oversized_payload(self):
-        """Payload > 4MB returns None."""
-        big = base64.b64encode(b"\x00" * (5 * 1024 * 1024)).decode()
+        """Payload > 10MB returns None."""
+        big = base64.b64encode(b"\x00" * (11 * 1024 * 1024)).decode()
         result = decode_frame(big)
         assert result is None
 
