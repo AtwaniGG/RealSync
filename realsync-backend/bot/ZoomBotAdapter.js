@@ -1289,10 +1289,11 @@ class ZoomBotAdapter {
           return speaker || null;
         }, this.displayName || "RealSync Bot").catch(() => null);
 
+        // PNG capture: lossless, avoids JPEG re-compression artifacts
+        // that degrade deepfake detection accuracy on Zoom video
         const screenshot = await this.page.screenshot({
           encoding: "base64",
-          type: "jpeg",
-          quality: 95,
+          type: "png",
         });
 
         this.onIngestMessage({

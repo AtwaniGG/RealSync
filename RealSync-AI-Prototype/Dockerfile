@@ -15,12 +15,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# H14: Set HF_HOME so DeBERTa cache is accessible after user switch
+# Set HF cache dir so models persist after user switch
 ENV HF_HOME=/app/.cache/huggingface
 
-# Pre-download DeBERTa model during build to avoid runtime download
-RUN python -c "from transformers import pipeline; pipeline('zero-shot-classification', model='MoritzLaurer/deberta-v3-base-zeroshot-v2.0')"
-RUN python -c "from transformers import WavLMModel; WavLMModel.from_pretrained('microsoft/wavlm-base')"
+# Pre-download CLIP deepfake model during build to avoid runtime download (~1.2GB)
+RUN python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='yermandy/deepfake-detection', filename='model.torchscript')"
 
 RUN useradd --create-home appuser && chown -R appuser:appuser /app
 
@@ -31,7 +30,7 @@ USER appuser
 
 EXPOSE 5100
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
   CMD curl -f http://localhost:${PORT:-5100}/api/health || exit 1
 
 CMD ["python", "-m", "serve.app"]

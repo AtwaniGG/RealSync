@@ -184,8 +184,7 @@ def main():
     print(f"  Real video:     {real_output}")
     print(f"  Frames: {total_frames}, Size: {target_w}x{target_h}")
     print(f"\nNext steps:")
-    print(f"  DISABLE_ZOOM_CALIBRATION=true .venv/bin/python scripts/verify_detection.py \\")
-    print(f"    --video {args.output} --real {real_output}")
+    print(f"  Test frames against the CLIP deepfake detector via /api/analyze/frame")
 
 
 if __name__ == "__main__":
