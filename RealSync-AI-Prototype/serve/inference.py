@@ -265,12 +265,21 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
         boundary_score = boundary_result["boundaryScore"]
 
         if clip_score is not None:
-            ensemble_score = round(
-                ENSEMBLE_WEIGHT_CLIP * clip_score
-                + ENSEMBLE_WEIGHT_FREQUENCY * freq_score
-                + ENSEMBLE_WEIGHT_BOUNDARY * boundary_score,
-                4,
-            )
+            if freq_score < 0.01:
+                # Frequency analyzer is dead on compressed video — redistribute weight
+                total_weight = ENSEMBLE_WEIGHT_CLIP + ENSEMBLE_WEIGHT_BOUNDARY
+                ensemble_score = round(
+                    (ENSEMBLE_WEIGHT_CLIP / total_weight) * clip_score
+                    + (ENSEMBLE_WEIGHT_BOUNDARY / total_weight) * boundary_score,
+                    4,
+                )
+            else:
+                ensemble_score = round(
+                    ENSEMBLE_WEIGHT_CLIP * clip_score
+                    + ENSEMBLE_WEIGHT_FREQUENCY * freq_score
+                    + ENSEMBLE_WEIGHT_BOUNDARY * boundary_score,
+                    4,
+                )
             # Determine risk level from ensemble score
             if ensemble_score > 0.70:
                 ensemble_risk = "low"
@@ -335,7 +344,11 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
 
     processed_at = _utcnow_iso()
     elapsed_ms = round((time.time() - start_time) * 1000, 1)
-    print(f"[inference] Frame analyzed in {elapsed_ms}ms — {len(faces)} face(s), SPRT: {sprt_result['decision']}")
+    ens_score = primary["deepfake"]["authenticityScore"] or 0
+    clip_s = primary["deepfake"].get("components", {}).get("clip", {}).get("authenticityScore", 0) or 0
+    print(f"[inference] Frame analyzed in {elapsed_ms}ms — {len(faces)} face(s), "
+          f"SPRT: {sprt_result['decision']} "
+          f"(clip={clip_s:.2f} ens={ens_score:.2f})")
 
     return {
         "sessionId": session_id,
