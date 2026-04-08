@@ -13,7 +13,6 @@ import { EASE, LABEL_STYLE, MONO_STYLE, trustColor, SEVERITY_CONFIG } from '../l
 import type { AlertSeverity } from '../lib/mockData'
 import { authFetch } from '../lib/api'
 import { useSessionContext } from '../contexts/SessionContext'
-import { generateReport } from '../lib/generateReport'
 import { generateReportReactPdf } from '../lib/generateReportReactPdf'
 
 interface TrustPoint { t: string; score: number }
@@ -50,32 +49,22 @@ function downloadJson(report: ReportData) {
   URL.revokeObjectURL(url)
 }
 
+function sanitizeCsvCell(val: string): string {
+  const s = val.replace(/"/g, '""')
+  if (/^[=+\-@\t\r]/.test(s)) return `"'${s}"`
+  return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s}"` : s
+}
+
 function downloadCsv(report: ReportData) {
   const rows = [
     ['Time', 'Severity', 'Category', 'Message'],
-    ...report.timeline.map((t) => [t.time, t.sev, t.cat, t.msg]),
+    ...report.timeline.map((t) => [t.time, t.sev, t.cat, t.msg].map(sanitizeCsvCell)),
   ]
   const csv = rows.map((r) => r.join(',')).join('\n')
   const blob = new Blob([csv], { type: 'text/csv' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a'); a.href = url; a.download = `${report.id}.csv`; a.click()
   URL.revokeObjectURL(url)
-}
-
-async function downloadPdf(report: ReportData) {
-  await generateReport({
-    id: report.id,
-    title: report.title,
-    date: report.date,
-    duration: report.duration,
-    durationMins: report.durationMins,
-    meetingType: report.meetingType,
-    participants: report.participants,
-    trustAvg: report.trustAvg,
-    alerts: report.alerts,
-    timeline: report.timeline,
-    trustCurve: report.trustCurve,
-  })
 }
 
 async function downloadPdfV2(report: ReportData) {

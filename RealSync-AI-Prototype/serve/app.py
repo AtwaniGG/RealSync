@@ -332,7 +332,7 @@ async def transcribe_endpoint(request: Request, payload: TranscribeRequest):
         return {
             "sessionId": payload.sessionId,
             "processedAt": _utcnow_iso(),
-            "transcription": result,
+            "transcript": result,
         }
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Transcription timed out")
