@@ -1133,6 +1133,27 @@ function NotificationSettings() {
       <h2 className="text-white text-2xl mb-6">Notifications</h2>
 
       <div className="space-y-6">
+        {/* Alert Sound */}
+        <div className="bg-[#1a1a2e] rounded-xl p-6 border border-gray-800">
+          <h3 className="text-white text-lg mb-4">Alert Sound</h3>
+          <div className="flex items-center justify-between py-3">
+            <div>
+              <p className="text-white mb-1">Enable Alert Sound</p>
+              <p className="text-gray-400 text-sm">
+                Play an audio tone when high or critical severity alerts are received
+              </p>
+            </div>
+            <Switch
+              checked={localStorage.getItem('realsync-alert-sound-enabled') !== 'false'}
+              onCheckedChange={(checked: boolean) => {
+                localStorage.setItem('realsync-alert-sound-enabled', String(checked));
+                // Force re-render
+                window.dispatchEvent(new Event('storage'));
+              }}
+            />
+          </div>
+        </div>
+
         {/* Desktop Notifications */}
         <DesktopNotificationSettings />
 

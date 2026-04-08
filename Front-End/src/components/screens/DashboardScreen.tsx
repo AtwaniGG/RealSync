@@ -331,7 +331,7 @@ export function DashboardScreen({
 
     // Metric-derived alerts (only if no real alerts yet and real metrics exist)
     if (filteredEvents.length === 0 && hasData) {
-      if (displayMetrics.deepfake.riskLevel !== 'low') {
+      if (displayMetrics.deepfake?.riskLevel && displayMetrics.deepfake.riskLevel !== 'low') {
         items.push({
           id: 'metric-deepfake',
           type: displayMetrics.deepfake.riskLevel === 'high' ? 'error' : 'warning',
@@ -340,11 +340,11 @@ export function DashboardScreen({
         });
       }
 
-      if (displayMetrics.emotion.label !== 'Neutral' && displayMetrics.emotion.confidence > 0.7) {
+      if (displayMetrics.emotion?.label !== 'Neutral' && (displayMetrics.emotion?.confidence ?? 0) > 0.7) {
         items.push({
           id: 'metric-emotion',
           type: 'warning',
-          message: `Elevated ${displayMetrics.emotion.label.toLowerCase()} expression detected.`,
+          message: `Elevated ${displayMetrics.emotion?.label?.toLowerCase() ?? 'unknown'} expression detected.`,
           time: 'just now',
         });
       }
@@ -369,9 +369,9 @@ export function DashboardScreen({
       { label: 'Behavior', value: 0, color: 'bg-gray-600' },
     ];
     return [
-      { label: 'Audio', value: toPercent(displayMetrics.confidenceLayers.audio ?? 0), color: displayMetrics.confidenceLayers.audio == null ? 'bg-gray-600' : 'bg-cyan-400' },
-      { label: 'Video', value: displayMetrics.cameraOff ? 0 : toPercent(displayMetrics.confidenceLayers.video ?? 0), color: displayMetrics.cameraOff ? 'bg-gray-600' : 'bg-cyan-400' },
-      { label: 'Behavior', value: displayMetrics.cameraOff ? 0 : toPercent(displayMetrics.confidenceLayers.behavior ?? 0), color: displayMetrics.cameraOff ? 'bg-gray-600' : 'bg-orange-400' },
+      { label: 'Audio', value: toPercent(displayMetrics.confidenceLayers?.audio ?? 0), color: displayMetrics.confidenceLayers?.audio == null ? 'bg-gray-600' : 'bg-cyan-400' },
+      { label: 'Video', value: displayMetrics.cameraOff ? 0 : toPercent(displayMetrics.confidenceLayers?.video ?? 0), color: displayMetrics.cameraOff ? 'bg-gray-600' : 'bg-cyan-400' },
+      { label: 'Behavior', value: displayMetrics.cameraOff ? 0 : toPercent(displayMetrics.confidenceLayers?.behavior ?? 0), color: displayMetrics.cameraOff ? 'bg-gray-600' : 'bg-orange-400' },
     ];
   }, [displayMetrics, hasData]);
 
@@ -578,11 +578,11 @@ export function DashboardScreen({
                   <div className="flex items-center justify-between mb-4">
                     <div>
                       <p className="text-gray-400 text-sm">Live Emotion</p>
-                      <p className="text-3xl text-white">{hasData ? (displayMetrics.emotion.confidence < 0.40 ? 'Neutral' : displayMetrics.emotion.label) : '--'}</p>
+                      <p className="text-3xl text-white">{hasData && displayMetrics.emotion ? ((displayMetrics.emotion.confidence ?? 0) < 0.40 ? 'Neutral' : displayMetrics.emotion.label) : '--'}</p>
                     </div>
                     <div className="text-right">
                       <p className="text-gray-400 text-sm">Confidence</p>
-                      <p className="text-2xl text-cyan-400 font-mono">{hasData ? `${toPercent(displayMetrics.emotion.confidence)}%` : '--%'}</p>
+                      <p className="text-2xl text-cyan-400 font-mono">{hasData && displayMetrics.emotion ? `${toPercent(displayMetrics.emotion.confidence)}%` : '--%'}</p>
                     </div>
                   </div>
                 </>
@@ -599,24 +599,24 @@ export function DashboardScreen({
                 <div>
                   <p className="text-gray-400 text-sm">Authenticity Score</p>
                   <p className="text-3xl text-white font-mono">
-                    {hasData && displayMetrics.confidenceLayers.audio != null
-                      ? `${toPercent(displayMetrics.confidenceLayers.audio)}%`
+                    {hasData && displayMetrics.confidenceLayers?.audio != null
+                      ? `${toPercent(displayMetrics.confidenceLayers?.audio)}%`
                       : '--%'}
                   </p>
                 </div>
                 <div className="text-right">
                   <p className="text-gray-400 text-sm">Risk</p>
-                  <p className={`text-2xl ${hasData && displayMetrics.confidenceLayers.audio != null
+                  <p className={`text-2xl ${hasData && displayMetrics.confidenceLayers?.audio != null
                     ? getRiskColor(audioRiskLevel)
                     : 'text-gray-500'}`}>
-                    {hasData && displayMetrics.confidenceLayers.audio != null ? audioRiskLevel : '--'}
+                    {hasData && displayMetrics.confidenceLayers?.audio != null ? audioRiskLevel : '--'}
                   </p>
                 </div>
               </div>
               <div className="h-2 bg-[#2a2a3e] rounded-full overflow-hidden">
                 <div
                   className={`h-full ${audioRiskLevel === 'high' ? 'bg-red-400' : audioRiskLevel === 'medium' ? 'bg-yellow-400' : 'bg-cyan-400'}`}
-                  style={{ width: hasData && displayMetrics.confidenceLayers.audio != null ? `${toPercent(displayMetrics.confidenceLayers.audio)}%` : '0%' }}
+                  style={{ width: hasData && displayMetrics.confidenceLayers?.audio != null ? `${toPercent(displayMetrics.confidenceLayers?.audio)}%` : '0%' }}
                 ></div>
               </div>
             </div>
@@ -640,20 +640,20 @@ export function DashboardScreen({
                   <div className="flex items-center justify-between mb-4">
                     <div>
                       <p className="text-gray-400 text-sm">Authenticity Score</p>
-                      <p className="text-3xl text-white font-mono">{hasData ? `${toPercent(displayMetrics.deepfake.authenticityScore)}%` : '--%'}</p>
+                      <p className="text-3xl text-white font-mono">{hasData && displayMetrics.deepfake ? `${toPercent(displayMetrics.deepfake.authenticityScore)}%` : '--%'}</p>
                     </div>
                     <div className="text-right">
                       <p className="text-gray-400 text-sm">Risk</p>
-                      <p className={`text-2xl ${hasData ? getRiskColor(displayMetrics.deepfake.riskLevel) : 'text-gray-500'}`}>
-                        {hasData ? displayMetrics.deepfake.riskLevel : '--'}
+                      <p className={`text-2xl ${hasData && displayMetrics.deepfake ? getRiskColor(displayMetrics.deepfake.riskLevel) : 'text-gray-500'}`}>
+                        {hasData && displayMetrics.deepfake ? displayMetrics.deepfake.riskLevel : '--'}
                       </p>
                     </div>
                   </div>
-                  {hasData && displayMetrics.deepfake.model && <p className="text-gray-500 text-xs mb-3">{displayMetrics.deepfake.model}</p>}
+                  {hasData && displayMetrics.deepfake?.model && <p className="text-gray-500 text-xs mb-3">{displayMetrics.deepfake.model}</p>}
                   <div className="h-2 bg-[#2a2a3e] rounded-full overflow-hidden">
                     <div
-                      className={`h-full ${displayMetrics.deepfake.riskLevel === 'high' ? 'bg-red-400' : displayMetrics.deepfake.riskLevel === 'medium' ? 'bg-yellow-400' : 'bg-cyan-400'}`}
-                      style={{ width: `${toPercent(displayMetrics.deepfake.authenticityScore)}%` }}
+                      className={`h-full ${displayMetrics.deepfake?.riskLevel === 'high' ? 'bg-red-400' : displayMetrics.deepfake?.riskLevel === 'medium' ? 'bg-yellow-400' : 'bg-cyan-400'}`}
+                      style={{ width: `${toPercent(displayMetrics.deepfake?.authenticityScore ?? 0)}%` }}
                     ></div>
                   </div>
                 </>

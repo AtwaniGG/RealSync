@@ -229,8 +229,9 @@ export function NotificationProvider({ children }: { children: import('react').R
         : toast.warning;
       toastFn(`${newNotification.title}: ${newNotification.message}`);
 
-      // Play alert sound for high/critical severity
-      if (newNotification.severity === 'critical' || newNotification.severity === 'high') {
+      // Play alert sound for high/critical severity (respects sound toggle)
+      const soundEnabled = localStorage.getItem('realsync-alert-sound-enabled') !== 'false';
+      if (soundEnabled && (newNotification.severity === 'critical' || newNotification.severity === 'high')) {
         playAlertSound(newNotification.severity);
       }
 
