@@ -118,8 +118,7 @@ class ZoomBotAdapter {
 
     try {
       this.browser = await puppeteer.launch({
-        headless: this.headless ? "new" : false,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+        headless: process.env.DISPLAY ? false : (this.headless ? "new" : false),
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
@@ -128,7 +127,6 @@ class ZoomBotAdapter {
           "--use-fake-device-for-media-stream", // Use fake camera device
           `--use-file-for-fake-video-capture=${AVATAR_VIDEO_PATH}`, // Animated Baymax avatar as camera feed
           "--autoplay-policy=no-user-gesture-required",
-          "--mute-audio",
 
           `--window-size=${VIEWPORT.width},${VIEWPORT.height}`,
         ],
@@ -223,11 +221,6 @@ class ZoomBotAdapter {
 
       // Dismiss Zoom popup dialogs that overlay the video
       await this._dismissZoomPopups();
-
-      if (this._stopped) { await this._cleanup(); return; }
-
-      // Mute the bot's microphone in Zoom to prevent sending fake audio
-      await this._muteBotMicrophone();
 
       if (this._stopped) { await this._cleanup(); return; }
 
@@ -922,39 +915,6 @@ class ZoomBotAdapter {
       }
     } else {
       log.warn("zoomBot", 'Could not find "Join" button.');
-    }
-  }
-
-  /**
-   * Mute the bot's microphone in Zoom so it doesn't send fake audio noise.
-   */
-  async _muteBotMicrophone() {
-    const page = this.page;
-    try {
-      log.info("zoomBot", "Muting bot microphone...");
-      // Look for the Mute button in Zoom's footer toolbar
-      const muteBtn = await page.$('button.join-audio-container__btn');
-      if (muteBtn) {
-        const btnText = await page.evaluate(el => el.textContent.trim(), muteBtn);
-        if (btnText === 'Mute') {
-          // Use JS click — Puppeteer .click() fails when footer is off-viewport
-          await page.evaluate(el => el.click(), muteBtn);
-          log.info("zoomBot", "Bot microphone muted.");
-        } else {
-          log.info("zoomBot", `Mic button says "${btnText}" — already muted or different state.`);
-        }
-      } else {
-        // Fallback: try clicking any button with "Mute" text
-        const clicked = await page.evaluate(() => {
-          const btns = [...document.querySelectorAll('button')];
-          const muteBtn = btns.find(b => b.textContent.trim() === 'Mute' && b.offsetParent !== null);
-          if (muteBtn) { muteBtn.click(); return true; }
-          return false;
-        });
-        log.info("zoomBot", clicked ? "Bot microphone muted (fallback)." : "Could not find Mute button.");
-      }
-    } catch (err) {
-      log.warn("zoomBot", `Failed to mute bot mic: ${err.message}`);
     }
   }
 
