@@ -14,6 +14,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { toast } from 'sonner';
 import { authFetch } from '../../lib/api';
 import { useWebSocket } from '../../contexts/WebSocketContext';
+import jsPDF from 'jspdf';
+import autoTable, { type CellHookData } from 'jspdf-autotable';
 
 type MeetingType = 'official' | 'business' | 'friends';
 
@@ -391,6 +393,229 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
     return `${m}:${String(s).padStart(2, '0')}`;
   }
 
+  /** Download a PDF report for the given session */
+  const handleDownload = useCallback(async (session: HistorySession) => {
+    toast('Preparing report...');
+    try {
+      const [reportRes, alertsRes, transcriptRes] = await Promise.all([
+        authFetch(`/api/sessions/${session.id}/report`),
+        authFetch(`/api/sessions/${session.id}/alerts`),
+        authFetch(`/api/sessions/${session.id}/transcript`),
+      ]);
+
+      if (!reportRes.ok) {
+        toast.error('Failed to fetch report data');
+        return;
+      }
+
+      const reportData = await reportRes.json();
+      const alertsData = alertsRes.ok ? await alertsRes.json() : { alerts: [] };
+      const transcriptData = transcriptRes.ok ? await transcriptRes.json() : { lines: [] };
+
+      const s = reportData.summary;
+      if (!s) {
+        toast.error('Report data unavailable for this session');
+        return;
+      }
+
+      const alerts: Array<{ alertId: string; severity: string; category: string; title: string; message: string; ts: string }> = alertsData.alerts || [];
+      const transcript: Array<{ text: string; speaker?: string; ts: string }> = transcriptData.lines || [];
+
+      const getSeverityBreakdown = (bd: { low: number; medium: number; high: number; critical: number }) => bd;
+      const breakdown = getSeverityBreakdown(s.severityBreakdown || { low: 0, medium: 0, high: 0, critical: 0 });
+
+      let overallRisk = 'low';
+      if (breakdown.critical > 0) overallRisk = 'critical';
+      else if (breakdown.high > 0) overallRisk = 'high';
+      else if (breakdown.medium > 0) overallRisk = 'medium';
+
+      const formatDur = (start: string, end: string | null) => {
+        if (!end) return 'In progress';
+        const ms = new Date(end).getTime() - new Date(start).getTime();
+        const mins = Math.floor(ms / 60000);
+        const secs = Math.floor((ms % 60000) / 1000);
+        return `${mins}:${String(secs).padStart(2, '0')}`;
+      };
+
+      interface JsPDFWithPlugin extends jsPDF { lastAutoTable?: { finalY: number }; }
+      const doc = new jsPDF() as JsPDFWithPlugin;
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageH = doc.internal.pageSize.getHeight();
+      let y = 14;
+
+      doc.setFillColor(15, 15, 30);
+      doc.rect(0, 0, pageW, 38, 'F');
+      doc.setFillColor(34, 211, 238);
+      doc.rect(0, 38, pageW, 2, 'F');
+
+      doc.setFontSize(20);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(34, 211, 238);
+      doc.text('RealSync', 14, y + 6);
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(160, 160, 175);
+      doc.text('AI-Powered Meeting Intelligence', 14, y + 12);
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(255, 255, 255);
+      doc.text('Meeting Analysis Report', pageW - 14, y + 6, { align: 'right' });
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(160, 160, 175);
+      doc.text(`Generated: ${new Date().toLocaleString()}`, pageW - 14, y + 12, { align: 'right' });
+
+      y = 50;
+
+      doc.setFontSize(13);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(34, 211, 238);
+      doc.text('Meeting Information', 14, y);
+      y += 2;
+      doc.setFillColor(34, 211, 238);
+      doc.rect(14, y, 40, 0.8, 'F');
+      y += 8;
+
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      const info: [string, string][] = [
+        ['Title', s.title || session.title],
+        ['Session ID', (s.sessionId || session.id).slice(0, 8)],
+        ['Date', new Date(s.createdAt || session.createdAt).toLocaleString()],
+        ['Duration', formatDur(s.createdAt || session.createdAt, s.endedAt || session.endedAt)],
+        ['Meeting Type', (s.meetingType || session.meetingType || '--').charAt(0).toUpperCase() + (s.meetingType || session.meetingType || '--').slice(1)],
+        ['Overall Risk', overallRisk.toUpperCase()],
+      ];
+      info.forEach(([label, val]) => {
+        doc.setTextColor(120, 120, 130);
+        doc.text(`${label}:`, 18, y);
+        if (label === 'Overall Risk') {
+          const riskColors: Record<string, [number, number, number]> = { critical: [239, 68, 68], high: [249, 115, 22], medium: [234, 179, 8], low: [34, 197, 94] };
+          const color = riskColors[overallRisk] || [255, 255, 255];
+          doc.setTextColor(color[0], color[1], color[2]);
+          doc.setFont('helvetica', 'bold');
+        } else {
+          doc.setTextColor(40, 40, 50);
+          doc.setFont('helvetica', 'normal');
+        }
+        doc.text(String(val), 65, y);
+        doc.setFont('helvetica', 'normal');
+        y += 6.5;
+      });
+
+      y += 6;
+
+      autoTable(doc, {
+        startY: y,
+        head: [['Severity', 'Count']],
+        body: [
+          ['Critical', String(breakdown.critical)],
+          ['High', String(breakdown.high)],
+          ['Medium', String(breakdown.medium)],
+          ['Low', String(breakdown.low)],
+          ['Total', String(s.totalAlerts ?? alerts.length)],
+        ],
+        theme: 'grid',
+        headStyles: { fillColor: [15, 15, 30], textColor: [34, 211, 238], fontSize: 9, fontStyle: 'bold' },
+        styles: { fontSize: 9, cellPadding: 3 },
+        alternateRowStyles: { fillColor: [245, 247, 250] },
+        margin: { left: 18, right: 18 },
+      });
+
+      y = (doc.lastAutoTable?.finalY ?? y) + 12;
+
+      if (alerts.length > 0) {
+        if (y > 240) { doc.addPage(); y = 20; }
+        doc.setFontSize(13);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(34, 211, 238);
+        doc.text('Alert Timeline', 14, y);
+        y += 2;
+        doc.setFillColor(34, 211, 238);
+        doc.rect(14, y, 40, 0.8, 'F');
+        y += 6;
+
+        autoTable(doc, {
+          startY: y,
+          head: [['Time', 'Severity', 'Category', 'Title', 'Message']],
+          body: alerts.map((a) => [
+            new Date(a.ts).toLocaleTimeString(),
+            a.severity.toUpperCase(),
+            a.category,
+            a.title,
+            a.message.length > 60 ? a.message.slice(0, 60) + '…' : a.message,
+          ]),
+          theme: 'grid',
+          headStyles: { fillColor: [15, 15, 30], textColor: [34, 211, 238], fontSize: 8, fontStyle: 'bold' },
+          styles: { fontSize: 8, cellPadding: 2.5, cellWidth: 'wrap' },
+          alternateRowStyles: { fillColor: [245, 247, 250] },
+          columnStyles: { 4: { cellWidth: 55 } },
+          margin: { left: 14, right: 14 },
+          didParseCell: (data: CellHookData) => {
+            if (data.section === 'body' && data.column.index === 1) {
+              const raw = data.row.raw;
+              const sev = (Array.isArray(raw) ? String(raw[1] ?? '') : '').toLowerCase();
+              if (sev === 'critical') data.cell.styles.textColor = [239, 68, 68];
+              else if (sev === 'high') data.cell.styles.textColor = [249, 115, 22];
+              else if (sev === 'medium') data.cell.styles.textColor = [234, 179, 8];
+              else data.cell.styles.textColor = [34, 197, 94];
+            }
+          },
+        });
+
+        y = (doc.lastAutoTable?.finalY ?? y) + 12;
+      }
+
+      if (transcript.length > 0) {
+        if (y > 240) { doc.addPage(); y = 20; }
+        doc.setFontSize(13);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(34, 211, 238);
+        doc.text(`Transcript (${Math.min(transcript.length, 50)} of ${transcript.length} lines)`, 14, y);
+        y += 2;
+        doc.setFillColor(34, 211, 238);
+        doc.rect(14, y, 40, 0.8, 'F');
+        y += 6;
+
+        autoTable(doc, {
+          startY: y,
+          head: [['Time', 'Speaker', 'Text']],
+          body: transcript.slice(0, 50).map((line) => [
+            new Date(line.ts).toLocaleTimeString(),
+            line.speaker || '--',
+            line.text.length > 80 ? line.text.slice(0, 80) + '…' : line.text,
+          ]),
+          theme: 'grid',
+          headStyles: { fillColor: [15, 15, 30], textColor: [34, 211, 238], fontSize: 8, fontStyle: 'bold' },
+          styles: { fontSize: 8, cellPadding: 2.5 },
+          alternateRowStyles: { fillColor: [245, 247, 250] },
+          columnStyles: { 2: { cellWidth: 110 } },
+          margin: { left: 14, right: 14 },
+        });
+      }
+
+      const totalPagesCount = doc.getNumberOfPages();
+      for (let i = 1; i <= totalPagesCount; i++) {
+        doc.setPage(i);
+        doc.setDrawColor(34, 211, 238);
+        doc.setLineWidth(0.5);
+        doc.line(14, pageH - 14, pageW - 14, pageH - 14);
+        doc.setFontSize(7);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(140, 140, 150);
+        doc.text('Generated by RealSync — AI-Powered Meeting Intelligence', 14, pageH - 8);
+        doc.text(`Page ${i} of ${totalPagesCount}`, pageW - 14, pageH - 8, { align: 'right' });
+      }
+
+      const sessionIdPrefix = (s.sessionId || session.id).slice(0, 8);
+      const filename = `RealSync_Report_${sessionIdPrefix}_${new Date().toISOString().slice(0, 10)}.pdf`;
+      doc.save(filename);
+      toast.success('Report downloaded');
+    } catch {
+      toast.error('Failed to download report');
+    }
+  }, []);
+
   /** Compute stats from real data */
   const stats = [
     { label: 'Total Sessions', value: String(historySessions.length) },
@@ -531,7 +756,10 @@ export function SessionsScreen({ onNavigate, onSignOut, profilePhoto, userName, 
                                     <Eye className="w-4 h-4 mr-2" />
                                     View Report
                                   </DropdownMenuItem>
-                                  <DropdownMenuItem className="text-gray-400 hover:bg-gray-800 px-3 py-2 cursor-pointer">
+                                  <DropdownMenuItem
+                                    className="text-gray-400 hover:bg-gray-800 px-3 py-2 cursor-pointer"
+                                    onClick={() => handleDownload(session)}
+                                  >
                                     <Download className="w-4 h-4 mr-2" />
                                     Download
                                   </DropdownMenuItem>
