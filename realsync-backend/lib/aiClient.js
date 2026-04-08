@@ -109,7 +109,7 @@ async function checkHealth() {
   if (!fetchImpl) return { ok: false, reason: "no fetch" };
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3000);
+  const timer = setTimeout(() => controller.abort(), 10000);
 
   try {
     const res = await fetchImpl(`${AI_SERVICE_URL}/api/health`, {

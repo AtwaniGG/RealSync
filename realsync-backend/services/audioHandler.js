@@ -16,6 +16,24 @@ function combineAudioChunks(chunks) {
 }
 
 /**
+ * Check if PCM16 audio buffer contains actual signal (not silence).
+ * Returns true if RMS energy exceeds a threshold.
+ */
+function hasAudioSignal(b64) {
+  const buf = Buffer.from(b64, "base64");
+  const samples = buf.length / 2;
+  if (samples === 0) return false;
+  let sumSq = 0;
+  for (let i = 0; i < buf.length - 1; i += 2) {
+    const sample = buf.readInt16LE(i);
+    sumSq += sample * sample;
+  }
+  const rms = Math.sqrt(sumSq / samples);
+  // PCM16 range is -32768 to 32767; RMS > 100 indicates non-silence
+  return rms > 100;
+}
+
+/**
  * Process a single base64 PCM chunk:
  *  - feeds it to the GCP STT stream
  *  - accumulates it for periodic AI deepfake + Whisper analysis
@@ -51,6 +69,13 @@ function processAudioChunk(session, dataB64) {
     const chunks = session.audioAnalysisBuffer.splice(0, 8);
     const combinedAudioB64 = combineAudioChunks(chunks);
     session.lastAudioAnalysisAt = now;
+
+    // Only analyze if audio has actual signal (not silence from virtual sink)
+    if (!hasAudioSignal(combinedAudioB64)) {
+      session.audioAnalysisInFlight = false;
+      return;
+    }
+    session.audioHasSignal = true;
 
     analyzeAudio({ sessionId: session.id, audioB64: combinedAudioB64, durationMs: 4000 })
       .then((res) => {

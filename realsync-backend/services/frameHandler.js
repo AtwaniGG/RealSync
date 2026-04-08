@@ -150,7 +150,7 @@ async function handleFrame(session, message) {
       const behaviorConf = result.aggregated.confidenceLayers?.behavior || 0.55;
 
       let finalTrust;
-      if (AUDIO_DEEPFAKE_ENABLED && audioScore != null) {
+      if (AUDIO_DEEPFAKE_ENABLED && audioScore != null && session.audioHasSignal) {
         // 3-signal weighted: video=0.45, audio=0.35, behavior=0.20
         finalTrust = 0.45 * rawVideoScore + 0.35 * audioScore + 0.20 * behaviorConf;
       } else {

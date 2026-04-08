@@ -275,6 +275,17 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
                     eff_clip_w * clip_score + eff_bnd_w * boundary_score,
                     4,
                 )
+            elif freq_score < 0.55:
+                # Compressed video: shift weights to trust CLIP more
+                eff_clip_w = 0.65
+                eff_freq_w = 0.15
+                eff_bnd_w = 0.20
+                ensemble_score = round(
+                    eff_clip_w * clip_score
+                    + eff_freq_w * freq_score
+                    + eff_bnd_w * boundary_score,
+                    4,
+                )
             else:
                 ensemble_score = round(
                     ENSEMBLE_WEIGHT_CLIP * clip_score
