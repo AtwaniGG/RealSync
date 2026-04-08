@@ -1,14 +1,12 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import {
   Eye, EyeOff, Shield, Lock, Mail, ShieldCheck,
-  Loader2, Mic, Brain,
+  Loader2, ArrowRight,
 } from 'lucide-react';
-import logo from 'figma:asset/4401d6799dc4e6061a79080f8825d69ae920f198.png';
-import logoLight from '../../assets/realsync-logo-light.png';
+import logoWhite from '../../assets/realsync-logo-white.png';
 import { supabase } from '../../lib/supabaseClient';
-import { useTheme } from '../../contexts/ThemeContext';
 import { toast } from 'sonner';
 
 interface LoginScreenProps {
@@ -37,39 +35,35 @@ const MicrosoftLogo = () => (
   </svg>
 );
 
-const FEATURES = [
-  {
-    icon: ShieldCheck,
-    title: 'Deepfake Detection',
-    desc: 'Advanced AI models analyze video feeds instantly',
-    colorClass: 'text-cyan-400',
-    bgClass: 'bg-cyan-500/10',
-    borderClass: 'border-cyan-500/20',
-    gradientClass: 'from-cyan-500/10',
-  },
-  {
-    icon: Brain,
-    title: 'Emotion Analysis',
-    desc: 'Track facial expressions and behavioral patterns',
-    colorClass: 'text-blue-400',
-    bgClass: 'bg-blue-500/10',
-    borderClass: 'border-blue-500/20',
-    gradientClass: 'from-blue-500/10',
-  },
-  {
-    icon: Mic,
-    title: 'Audio Forensics',
-    desc: 'Voice synthesis and manipulation detection',
-    colorClass: 'text-violet-400',
-    bgClass: 'bg-violet-500/10',
-    borderClass: 'border-violet-500/20',
-    gradientClass: 'from-violet-500/10',
-  },
-];
+// Scan line component — CSS keyframe based to avoid Framer Motion dependency
+function ScanLine({ containerRef }: { containerRef: React.RefObject<HTMLDivElement | null> }) {
+  const [height, setHeight] = useState(600);
+
+  useEffect(() => {
+    if (containerRef.current) setHeight(containerRef.current.offsetHeight);
+  }, [containerRef]);
+
+  return (
+    <>
+      <style>{`
+        @keyframes scanSweep {
+          from { transform: translateY(0); }
+          to { transform: translateY(${height}px); }
+        }
+        .scan-line {
+          animation: scanSweep 4s linear 0.7s infinite;
+        }
+      `}</style>
+      <div
+        className="scan-line absolute left-0 right-0 h-px pointer-events-none z-10"
+        style={{ background: 'rgba(255,255,255,0.05)' }}
+      />
+    </>
+  );
+}
 
 export function LoginScreen({ onSwitchToSignUp, oauthError, onClearOAuthError }: LoginScreenProps) {
-  const { resolvedTheme } = useTheme();
-  const activeLogo = resolvedTheme === 'light' ? logoLight : logo;
+  const cardRef = useRef<HTMLDivElement>(null);
 
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState('');
@@ -193,309 +187,405 @@ export function LoginScreen({ onSwitchToSignUp, oauthError, onClearOAuthError }:
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a14] flex items-center justify-center p-6 relative overflow-hidden">
-      {/* Background gradient orbs */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute -top-64 -left-32 w-[700px] h-[700px] bg-cyan-500/8 rounded-full blur-[120px]" />
-        <div className="absolute -bottom-64 -right-32 w-[600px] h-[600px] bg-violet-500/8 rounded-full blur-[120px]" />
-        <div className="absolute top-1/2 left-1/3 w-[400px] h-[400px] bg-blue-500/6 rounded-full blur-[100px]" />
-        {/* Subtle grid */}
+    <div
+      className="min-h-screen flex flex-col items-center justify-center relative overflow-hidden px-4 py-12"
+      style={{ background: '#08080c' }}
+    >
+      {/* ── Animated orbs ── */}
+      <div className="absolute inset-0 pointer-events-none overflow-hidden">
         <div
-          className="absolute inset-0 opacity-[0.025]"
+          className="absolute rounded-full"
           style={{
-            backgroundImage: 'linear-gradient(rgba(255,255,255,1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,1) 1px, transparent 1px)',
+            width: 500, height: 500,
+            right: '-5%', top: '-10%',
+            background: 'rgba(34,211,238,0.12)',
+            filter: 'blur(200px)',
+            animation: 'orbDriftA 10s ease-in-out infinite alternate',
+          }}
+        />
+        <div
+          className="absolute rounded-full"
+          style={{
+            width: 600, height: 600,
+            left: '-15%', bottom: '-10%',
+            background: 'rgba(139,92,246,0.10)',
+            filter: 'blur(240px)',
+            animation: 'orbDriftB 12s ease-in-out infinite alternate',
+          }}
+        />
+        {/* Grid overlay */}
+        <div
+          className="absolute inset-0 hidden md:block"
+          style={{
+            backgroundImage: 'linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px)',
             backgroundSize: '64px 64px',
           }}
         />
       </div>
 
-      {/* Main layout */}
-      <div className="relative z-10 w-full max-w-6xl grid lg:grid-cols-2 gap-12 items-center">
+      <style>{`
+        @keyframes orbDriftA {
+          from { transform: translate(0, 0); }
+          to { transform: translate(-30px, 20px); }
+        }
+        @keyframes orbDriftB {
+          from { transform: translate(0, 0); }
+          to { transform: translate(25px, -20px); }
+        }
+        @keyframes logoPulse {
+          0%, 100% { transform: scale(1); opacity: 0.85; }
+          50% { transform: scale(1.02); opacity: 1; }
+        }
+      `}</style>
 
-        {/* Left Side — Brand panel */}
-        <div className="hidden lg:flex flex-col gap-10 animate-in fade-in slide-in-from-left-8 duration-700">
-          {/* Logo */}
-          <div>
-            <img src={activeLogo} alt="RealSync" className="h-10 w-auto" />
-          </div>
+      {/* ── Logo ── */}
+      <div
+        className="relative z-10 mb-4"
+        style={{ animation: 'logoPulse 3s ease-in-out infinite' }}
+      >
+        <img
+          src={logoWhite}
+          alt="RealSync"
+          className="w-auto"
+          style={{ height: 80 }}
+        />
+      </div>
 
-          {/* Headline */}
-          <div className="space-y-4">
-            <h1 className="text-5xl font-bold text-white leading-[1.1] tracking-tight">
-              See what's{' '}
-              <span className="bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent">
-                real.
-              </span>
-            </h1>
-            <p className="text-gray-400 text-base leading-relaxed max-w-md">
-              AI-powered deepfake detection and emotion analysis for video meetings.
-              Protect your organization from identity fraud in real time.
-            </p>
-          </div>
+      {/* ── Tagline ── */}
+      <p
+        className="relative z-10 mb-8 text-sm"
+        style={{ color: 'rgba(255,255,255,0.45)', fontFamily: 'Inter, sans-serif' }}
+      >
+        AI-Powered Meeting Security
+      </p>
 
-          {/* Feature cards */}
-          <div className="space-y-3 max-w-md">
-            {FEATURES.map((f, i) => (
+      {/* ── Glass card ── */}
+      <div
+        ref={cardRef}
+        className="relative z-10 w-full max-w-[420px] overflow-hidden"
+        style={{
+          background: 'rgba(255,255,255,0.04)',
+          backdropFilter: 'blur(20px) saturate(120%)',
+          WebkitBackdropFilter: 'blur(20px) saturate(120%)',
+          border: '1px solid rgba(255,255,255,0.08)',
+          borderRadius: 20,
+          padding: '40px',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.03) inset',
+        }}
+      >
+        {/* Scan line */}
+        <ScanLine containerRef={cardRef} />
+
+        {mfaRequired ? (
+          /* ── MFA Challenge ── */
+          <div className="space-y-6">
+            <div className="text-center">
               <div
-                key={f.title}
-                className={`flex items-center gap-4 p-4 rounded-2xl bg-gradient-to-r ${f.gradientClass} to-transparent border ${f.borderClass}`}
-                style={{ animationDelay: `${i * 100}ms` }}
+                className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4"
+                style={{ background: 'linear-gradient(135deg, #22d3ee, #3b82f6)', boxShadow: '0 0 32px rgba(34,211,238,0.25)' }}
               >
-                <div className={`w-10 h-10 rounded-xl ${f.bgClass} flex items-center justify-center flex-shrink-0`}>
-                  <f.icon className={`w-5 h-5 ${f.colorClass}`} />
-                </div>
-                <div>
-                  <h3 className="text-white text-sm font-semibold mb-0.5">{f.title}</h3>
-                  <p className="text-gray-500 text-xs leading-relaxed">{f.desc}</p>
-                </div>
+                <ShieldCheck className="w-8 h-8 text-white" />
               </div>
-            ))}
-          </div>
-
-          {/* Trust indicator */}
-          <div className="flex items-center gap-2 text-gray-600 text-xs">
-            <div className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span>Trusted by security teams across the region</span>
-          </div>
-        </div>
-
-        {/* Right Side — Form card */}
-        <div className="w-full">
-          <div
-            className="rounded-3xl p-8 border border-white/8 shadow-2xl relative overflow-hidden"
-            style={{
-              background: 'rgba(15,15,22,0.85)',
-              backdropFilter: 'blur(32px) saturate(150%)',
-              WebkitBackdropFilter: 'blur(32px) saturate(150%)',
-              boxShadow: '0 24px 64px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.04)',
-            }}
-          >
-            {/* Top shimmer line */}
-            <div
-              className="absolute top-0 left-8 right-8 h-px"
-              style={{ background: 'linear-gradient(90deg, transparent, rgba(34,211,238,0.5), rgba(59,130,246,0.5), transparent)' }}
-            />
-
-            {/* Mobile logo */}
-            <div className="lg:hidden flex justify-center mb-6">
-              <img src={activeLogo} alt="RealSync" className="h-8 w-auto" />
+              <h2 className="text-white text-2xl font-bold mb-2 tracking-tight">Two-Factor Authentication</h2>
+              <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>Enter the 6-digit code from your authenticator app</p>
             </div>
 
-            {mfaRequired ? (
-              /* MFA Challenge */
-              <div className="space-y-6">
-                <div className="text-center">
-                  <div
-                    className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4"
-                    style={{ background: 'linear-gradient(135deg, #22d3ee, #3b82f6)', boxShadow: '0 0 32px rgba(34,211,238,0.25)' }}
-                  >
-                    <ShieldCheck className="w-8 h-8 text-white" />
-                  </div>
-                  <h2 className="text-white text-2xl font-bold mb-2 tracking-tight">Two-Factor Authentication</h2>
-                  <p className="text-gray-400 text-sm">Enter the 6-digit code from your authenticator app</p>
-                </div>
+            <Input
+              type="text"
+              maxLength={6}
+              placeholder="000000"
+              value={mfaCode}
+              onChange={(e) => { setMfaCode(e.target.value.replace(/\D/g, '')); setMfaError(null); }}
+              className="text-white text-center text-3xl tracking-[0.6em] h-16 font-mono"
+              style={{
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: 12,
+              }}
+              autoFocus
+            />
+            {mfaError && <p className="text-red-400 text-sm text-center">{mfaError}</p>}
 
-                <Input
-                  type="text"
-                  maxLength={6}
-                  placeholder="000000"
-                  value={mfaCode}
-                  onChange={(e) => { setMfaCode(e.target.value.replace(/\D/g, '')); setMfaError(null); }}
-                  className="bg-white/4 border-white/10 text-white text-center text-3xl tracking-[0.6em] h-16 font-mono focus:border-cyan-400/60 focus:ring-cyan-400/20"
-                  autoFocus
+            <Button
+              onClick={handleMfaVerify}
+              disabled={mfaVerifying || mfaCode.length !== 6}
+              className="w-full h-12 text-white font-semibold"
+              style={{
+                background: 'linear-gradient(135deg, #22d3ee, #3b82f6)',
+                borderRadius: 12,
+                boxShadow: '0 0 24px rgba(34,211,238,0.25)',
+              }}
+            >
+              {mfaVerifying ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Verifying...</>
+              ) : (
+                <><Shield className="w-4 h-4 mr-2" />Verify</>
+              )}
+            </Button>
+
+            <button
+              onClick={async () => {
+                await supabase.auth.signOut();
+                setMfaRequired(false);
+                setMfaCode('');
+                setMfaError(null);
+              }}
+              className="w-full text-center text-sm transition-colors"
+              style={{ color: 'rgba(255,255,255,0.35)', background: 'none', border: 'none', cursor: 'pointer' }}
+            >
+              Back to sign in
+            </button>
+          </div>
+        ) : (
+          /* ── Login form ── */
+          <div className="space-y-5">
+            {/* Header */}
+            <div>
+              <h2 className="text-white text-2xl font-bold tracking-tight mb-1.5">Welcome back</h2>
+              <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: 13 }}>Sign in with your corporate email</p>
+            </div>
+
+            {/* Email */}
+            <div className="space-y-2">
+              <label
+                className="block uppercase tracking-widest font-medium"
+                style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', letterSpacing: '0.1em' }}
+              >
+                Email
+              </label>
+              <div className="relative">
+                <Mail
+                  className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4"
+                  style={{ color: emailError ? '#f87171' : 'rgba(255,255,255,0.3)' }}
                 />
-                {mfaError && <p className="text-red-400 text-sm text-center">{mfaError}</p>}
+                <Input
+                  type="email"
+                  placeholder="you@company.com"
+                  value={email}
+                  onChange={(e) => { setEmail(e.target.value); setEmailError(null); }}
+                  className="text-white h-12 pl-10 rounded-xl transition-all"
+                  style={{
+                    background: 'rgba(255,255,255,0.05)',
+                    border: emailError ? '1px solid rgba(239,68,68,0.5)' : '1px solid rgba(255,255,255,0.08)',
+                  }}
+                  onFocus={(e) => {
+                    if (!emailError) {
+                      e.currentTarget.style.borderColor = 'rgba(34,211,238,0.5)';
+                      e.currentTarget.style.boxShadow = '0 0 0 3px rgba(34,211,238,0.1)';
+                    }
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = emailError ? 'rgba(239,68,68,0.5)' : 'rgba(255,255,255,0.08)';
+                    e.currentTarget.style.boxShadow = 'none';
+                  }}
+                />
+              </div>
+              {emailError && <p className="text-red-400 text-xs mt-1">{emailError}</p>}
+            </div>
 
-                <Button
-                  onClick={handleMfaVerify}
-                  disabled={mfaVerifying || mfaCode.length !== 6}
-                  className="w-full h-12 text-white font-semibold shadow-lg"
-                  style={{ background: 'linear-gradient(135deg, #22d3ee, #3b82f6)', boxShadow: '0 0 20px rgba(34,211,238,0.25)' }}
+            {/* Password */}
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <label
+                  className="uppercase tracking-widest font-medium"
+                  style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', letterSpacing: '0.1em' }}
                 >
-                  {mfaVerifying ? (
-                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Verifying...</>
-                  ) : (
-                    <><Shield className="w-4 h-4 mr-2" />Verify</>
-                  )}
-                </Button>
-
+                  Password
+                </label>
                 <button
                   onClick={async () => {
-                    await supabase.auth.signOut();
-                    setMfaRequired(false);
-                    setMfaCode('');
-                    setMfaError(null);
+                    if (!email.trim()) {
+                      setEmailError('Enter your email first to reset password.');
+                      return;
+                    }
+                    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+                      redirectTo: window.location.origin,
+                    });
+                    if (error) {
+                      setFormError(error.message);
+                    } else {
+                      setFormError(null);
+                      toast.success('Password reset email sent! Check your inbox.');
+                    }
                   }}
-                  className="w-full text-center text-gray-500 text-sm hover:text-gray-300 transition-colors"
+                  className="text-xs font-medium transition-opacity hover:opacity-70"
+                  style={{ color: '#22D3EE', background: 'none', border: 'none', cursor: 'pointer' }}
                 >
-                  Back to sign in
+                  Forgot password?
                 </button>
               </div>
-            ) : (
-              /* Login form */
-              <div className="space-y-6">
-                {/* Header */}
-                <div>
-                  <h2 className="text-white text-2xl font-bold tracking-tight mb-1.5">Welcome back</h2>
-                  <p className="text-gray-500 text-sm">Sign in with your corporate email</p>
-                </div>
-
-                {/* Email */}
-                <div className="space-y-2">
-                  <label className="text-gray-400 text-xs uppercase tracking-widest font-semibold block">Email</label>
-                  <div className="relative">
-                    <Mail className={`absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 ${emailError ? 'text-red-400' : 'text-gray-600'}`} />
-                    <Input
-                      type="email"
-                      placeholder="you@company.com"
-                      value={email}
-                      onChange={(e) => { setEmail(e.target.value); setEmailError(null); }}
-                      className={`bg-white/4 border-white/8 text-white placeholder:text-gray-600 h-12 pl-10 rounded-xl focus:bg-white/6 transition-all ${
-                        emailError
-                          ? 'border-red-500/60 focus:border-red-500/80 focus:ring-red-500/20'
-                          : 'focus:border-cyan-400/60 focus:ring-cyan-400/20'
-                      }`}
-                    />
-                  </div>
-                  {emailError && <p className="text-red-400 text-xs mt-1">{emailError}</p>}
-                </div>
-
-                {/* Password */}
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center">
-                    <label className="text-gray-400 text-xs uppercase tracking-widest font-semibold">Password</label>
-                    <button
-                      onClick={async () => {
-                        if (!email.trim()) {
-                          setEmailError('Enter your email first to reset password.');
-                          return;
-                        }
-                        const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-                          redirectTo: window.location.origin,
-                        });
-                        if (error) {
-                          setFormError(error.message);
-                        } else {
-                          setFormError(null);
-                          toast.success('Password reset email sent! Check your inbox.');
-                        }
-                      }}
-                      className="text-cyan-400 text-xs hover:text-cyan-300 transition-colors font-medium"
-                    >
-                      Forgot password?
-                    </button>
-                  </div>
-                  <div className="relative">
-                    <Lock className={`absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 ${passwordError ? 'text-red-400' : 'text-gray-600'}`} />
-                    <Input
-                      type={showPassword ? 'text' : 'password'}
-                      placeholder="Enter your password"
-                      value={password}
-                      onChange={(e) => { setPassword(e.target.value); setPasswordError(null); }}
-                      className={`bg-white/4 border-white/8 text-white placeholder:text-gray-600 h-12 pl-10 pr-12 rounded-xl focus:bg-white/6 transition-all ${
-                        passwordError
-                          ? 'border-red-500/60 focus:border-red-500/80 focus:ring-red-500/20'
-                          : 'focus:border-cyan-400/60 focus:ring-cyan-400/20'
-                      }`}
-                    />
-                    <button
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-300 transition-colors p-1"
-                    >
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                  {passwordError && <p className="text-red-400 text-xs mt-1">{passwordError}</p>}
-                </div>
-
-                {/* Sign in button */}
-                <Button
-                  onClick={handleSignIn}
-                  disabled={isSubmitting}
-                  className="w-full h-12 text-white font-bold rounded-xl shadow-lg transition-all hover:scale-[1.01] active:scale-[0.99]"
+              <div className="relative">
+                <Lock
+                  className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4"
+                  style={{ color: passwordError ? '#f87171' : 'rgba(255,255,255,0.3)' }}
+                />
+                <Input
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="Enter your password"
+                  value={password}
+                  onChange={(e) => { setPassword(e.target.value); setPasswordError(null); }}
+                  className="text-white h-12 pl-10 pr-12 rounded-xl transition-all"
                   style={{
-                    background: 'linear-gradient(135deg, #22d3ee, #3b82f6)',
-                    boxShadow: '0 0 24px rgba(34,211,238,0.2), 0 4px 16px rgba(0,0,0,0.3)',
+                    background: 'rgba(255,255,255,0.05)',
+                    border: passwordError ? '1px solid rgba(239,68,68,0.5)' : '1px solid rgba(255,255,255,0.08)',
                   }}
+                  onFocus={(e) => {
+                    if (!passwordError) {
+                      e.currentTarget.style.borderColor = 'rgba(34,211,238,0.5)';
+                      e.currentTarget.style.boxShadow = '0 0 0 3px rgba(34,211,238,0.1)';
+                    }
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = passwordError ? 'rgba(239,68,68,0.5)' : 'rgba(255,255,255,0.08)';
+                    e.currentTarget.style.boxShadow = 'none';
+                  }}
+                />
+                <button
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 transition-colors p-1"
+                  style={{ color: 'rgba(255,255,255,0.3)', background: 'none', border: 'none', cursor: 'pointer' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.3)'; }}
                 >
-                  {isSubmitting ? (
-                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Signing in...</>
-                  ) : (
-                    <><Shield className="w-4 h-4 mr-2" />Sign In Securely</>
-                  )}
-                </Button>
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {passwordError && <p className="text-red-400 text-xs mt-1">{passwordError}</p>}
+            </div>
 
-                {/* Divider */}
-                <div className="flex items-center gap-3">
-                  <div className="flex-1 h-px bg-white/6" />
-                  <span className="text-gray-600 text-xs font-medium tracking-wide">Or continue with</span>
-                  <div className="flex-1 h-px bg-white/6" />
-                </div>
+            {/* Sign in button */}
+            <Button
+              onClick={handleSignIn}
+              disabled={isSubmitting}
+              className="w-full h-12 text-white font-bold rounded-xl transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2"
+              style={{
+                background: 'linear-gradient(135deg, #22d3ee, #3b82f6)',
+                boxShadow: '0 0 24px rgba(34,211,238,0.25)',
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 0 36px rgba(34,211,238,0.4)'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 0 24px rgba(34,211,238,0.25)'; }}
+            >
+              {isSubmitting ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Signing in...</>
+              ) : (
+                <>Sign in securely <ArrowRight className="w-4 h-4" /></>
+              )}
+            </Button>
 
-                {/* OAuth domain error */}
-                {oauthError && (
-                  <div className="text-sm text-orange-400 bg-orange-500/8 border border-orange-500/20 rounded-xl px-4 py-3 flex items-start gap-2">
-                    <svg className="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                    </svg>
-                    <span>{oauthError}</span>
-                  </div>
-                )}
+            {/* Divider */}
+            <div className="flex items-center gap-3">
+              <div className="flex-1 h-px" style={{ background: 'rgba(255,255,255,0.06)' }} />
+              <span className="text-xs font-medium tracking-wide" style={{ color: 'rgba(255,255,255,0.3)' }}>or</span>
+              <div className="flex-1 h-px" style={{ background: 'rgba(255,255,255,0.06)' }} />
+            </div>
 
-                {/* OAuth buttons */}
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    onClick={handleGoogleLogin}
-                    className="flex items-center justify-center gap-2.5 h-11 rounded-xl border border-white/8 bg-white/3 text-gray-300 text-sm font-medium hover:bg-white/7 hover:border-white/16 hover:text-white transition-all"
-                  >
-                    <GoogleLogo />
-                    Google
-                  </button>
-                  <button
-                    onClick={handleMicrosoftLogin}
-                    className="flex items-center justify-center gap-2.5 h-11 rounded-xl border border-white/8 bg-white/3 text-gray-300 text-sm font-medium hover:bg-white/7 hover:border-white/16 hover:text-white transition-all"
-                  >
-                    <MicrosoftLogo />
-                    Microsoft
-                  </button>
-                </div>
-
-                {/* Form error */}
-                {formError && (
-                  <div className="text-sm text-red-400 bg-red-500/8 border border-red-500/20 rounded-xl px-4 py-3">
-                    {formError}
-                  </div>
-                )}
-
-                {/* Switch to sign up */}
-                <div className="pt-4 border-t border-white/6 text-center">
-                  <p className="text-gray-500 text-sm">
-                    Don't have an account?{' '}
-                    <button
-                      onClick={onSwitchToSignUp}
-                      className="text-cyan-400 hover:text-cyan-300 font-semibold transition-colors"
-                    >
-                      Sign up
-                    </button>
-                  </p>
-                </div>
-
-                {/* Corporate notice */}
-                <div className="flex items-start gap-2.5 p-3 rounded-xl bg-blue-500/6 border border-blue-500/14">
-                  <Shield className="w-3.5 h-3.5 text-blue-400 mt-0.5 flex-shrink-0" />
-                  <span className="text-gray-500 text-xs leading-relaxed">
-                    Corporate or institutional email required. Personal providers (Gmail, Yahoo) are not accepted.
-                  </span>
-                </div>
+            {/* OAuth domain error */}
+            {oauthError && (
+              <div
+                className="text-sm rounded-xl px-4 py-3 flex items-start gap-2"
+                style={{ color: '#fb923c', background: 'rgba(249,115,22,0.08)', border: '1px solid rgba(249,115,22,0.2)' }}
+              >
+                <svg className="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+                <span>{oauthError}</span>
               </div>
             )}
 
-            {/* SSL badge */}
-            <div className="mt-6 flex items-center justify-center gap-2 text-gray-600 text-xs">
-              <Lock className="w-3 h-3" />
-              <span>Protected by 256-bit SSL encryption</span>
+            {/* OAuth buttons */}
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={handleGoogleLogin}
+                className="flex items-center justify-center gap-2.5 h-11 rounded-xl text-sm font-medium transition-all"
+                style={{
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  background: 'rgba(255,255,255,0.05)',
+                  color: 'rgba(255,255,255,0.7)',
+                  cursor: 'pointer',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.18)';
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.09)';
+                  e.currentTarget.style.color = '#ffffff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
+                  e.currentTarget.style.color = 'rgba(255,255,255,0.7)';
+                }}
+              >
+                <GoogleLogo />
+                Google
+              </button>
+              <button
+                onClick={handleMicrosoftLogin}
+                className="flex items-center justify-center gap-2.5 h-11 rounded-xl text-sm font-medium transition-all"
+                style={{
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  background: 'rgba(255,255,255,0.05)',
+                  color: 'rgba(255,255,255,0.7)',
+                  cursor: 'pointer',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.18)';
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.09)';
+                  e.currentTarget.style.color = '#ffffff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
+                  e.currentTarget.style.color = 'rgba(255,255,255,0.7)';
+                }}
+              >
+                <MicrosoftLogo />
+                Microsoft
+              </button>
+            </div>
+
+            {/* Form error */}
+            {formError && (
+              <div
+                className="text-sm rounded-xl px-4 py-3"
+                style={{ color: '#f87171', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}
+              >
+                {formError}
+              </div>
+            )}
+
+            {/* Switch to sign up */}
+            <div
+              className="pt-4 text-center"
+              style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}
+            >
+              <p className="text-sm" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                Don't have an account?{' '}
+                <button
+                  onClick={onSwitchToSignUp}
+                  className="font-semibold transition-opacity hover:opacity-75"
+                  style={{ color: '#22D3EE', background: 'none', border: 'none', cursor: 'pointer' }}
+                >
+                  Sign up
+                </button>
+              </p>
+            </div>
+
+            {/* Corporate notice */}
+            <div
+              className="flex items-start gap-2.5 p-3 rounded-xl"
+              style={{ background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.14)' }}
+            >
+              <Shield className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" style={{ color: '#3b82f6' }} />
+              <span className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.35)' }}>
+                Corporate or institutional email required. Personal providers (Gmail, Yahoo) are not accepted.
+              </span>
             </div>
           </div>
+        )}
+
+        {/* SSL badge */}
+        <div className="mt-6 flex items-center justify-center gap-2 text-xs" style={{ color: 'rgba(255,255,255,0.25)' }}>
+          <Lock className="w-3 h-3" />
+          <span>Protected by 256-bit SSL encryption</span>
         </div>
       </div>
     </div>

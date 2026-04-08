@@ -3,12 +3,10 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import {
   Eye, EyeOff, Lock, Mail, AlertTriangle, CheckCircle2,
-  MailCheck, LogIn, RefreshCw, Shield, Loader2, Users,
+  MailCheck, LogIn, RefreshCw, Shield, Loader2, ArrowRight,
 } from 'lucide-react';
-import logo from 'figma:asset/4401d6799dc4e6061a79080f8825d69ae920f198.png';
-import logoLight from '../../assets/realsync-logo-light.png';
+import logoWhite from '../../assets/realsync-logo-white.png';
 import { supabase } from '../../lib/supabaseClient';
-import { useTheme } from '../../contexts/ThemeContext';
 import { isBlockedDomain } from '../../lib/blockedDomains';
 
 // Real Google SVG logo
@@ -31,33 +29,53 @@ const MicrosoftLogo = () => (
   </svg>
 );
 
-function getPasswordStrength(pw: string): { score: number; label: string; barHex: string; textColor: string } {
-  if (!pw) return { score: 0, label: '', barHex: 'rgba(255,255,255,0.06)', textColor: 'text-gray-600' };
+function getPasswordStrength(pw: string): { score: number; label: string; barHex: string } {
+  if (!pw) return { score: 0, label: '', barHex: 'rgba(255,255,255,0.06)' };
   let score = 0;
   if (pw.length >= 6) score++;
   if (pw.length >= 8) score++;
   if (/[A-Z]/.test(pw)) score++;
   if (/[0-9]/.test(pw)) score++;
   if (/[^A-Za-z0-9]/.test(pw)) score++;
-  if (score <= 1) return { score: 1, label: 'Weak', barHex: '#ef4444', textColor: 'text-red-400' };
-  if (score === 2) return { score: 2, label: 'Fair', barHex: '#f97316', textColor: 'text-orange-400' };
-  if (score === 3) return { score: 3, label: 'Good', barHex: '#eab308', textColor: 'text-yellow-400' };
-  return { score: 4, label: 'Strong', barHex: '#10b981', textColor: 'text-emerald-400' };
+  if (score <= 1) return { score: 1, label: 'Weak', barHex: '#ef4444' };
+  if (score === 2) return { score: 2, label: 'Fair', barHex: '#f97316' };
+  if (score === 3) return { score: 3, label: 'Good', barHex: '#eab308' };
+  return { score: 4, label: 'Strong', barHex: '#10b981' };
 }
 
-const SOCIAL_PROOF = [
-  { label: '500+', desc: 'Organizations' },
-  { label: '99.4%', desc: 'Accuracy' },
-  { label: '< 200ms', desc: 'Real-time' },
-];
+// Scan line component — CSS keyframe based
+function ScanLine({ containerRef }: { containerRef: React.RefObject<HTMLDivElement | null> }) {
+  const [height, setHeight] = useState(700);
+
+  useEffect(() => {
+    if (containerRef.current) setHeight(containerRef.current.offsetHeight);
+  }, [containerRef]);
+
+  return (
+    <>
+      <style>{`
+        @keyframes scanSweepSignUp {
+          from { transform: translateY(0); }
+          to { transform: translateY(${height}px); }
+        }
+        .scan-line-signup {
+          animation: scanSweepSignUp 4s linear 0.7s infinite;
+        }
+      `}</style>
+      <div
+        className="scan-line-signup absolute left-0 right-0 h-px pointer-events-none z-10"
+        style={{ background: 'rgba(255,255,255,0.05)' }}
+      />
+    </>
+  );
+}
 
 interface SignUpScreenProps {
   onSwitchToLogin: () => void;
 }
 
 export function SignUpScreen({ onSwitchToLogin }: SignUpScreenProps) {
-  const { resolvedTheme } = useTheme();
-  const activeLogo = resolvedTheme === 'light' ? logoLight : logo;
+  const cardRef = useRef<HTMLDivElement>(null);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -151,349 +169,437 @@ export function SignUpScreen({ onSwitchToLogin }: SignUpScreenProps) {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a14] flex items-center justify-center p-6 relative overflow-hidden">
-      {/* Background gradient orbs */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute -top-64 -left-32 w-[700px] h-[700px] bg-violet-500/8 rounded-full blur-[120px]" />
-        <div className="absolute -bottom-64 -right-32 w-[600px] h-[600px] bg-cyan-500/8 rounded-full blur-[120px]" />
-        <div className="absolute top-1/2 left-1/3 w-[400px] h-[400px] bg-blue-500/6 rounded-full blur-[100px]" />
-        {/* Subtle grid */}
+    <div
+      className="min-h-screen flex flex-col items-center justify-center relative overflow-hidden px-4 py-12"
+      style={{ background: '#08080c' }}
+    >
+      {/* ── Animated orbs ── */}
+      <div className="absolute inset-0 pointer-events-none overflow-hidden">
         <div
-          className="absolute inset-0 opacity-[0.025]"
+          className="absolute rounded-full"
           style={{
-            backgroundImage: 'linear-gradient(rgba(255,255,255,1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,1) 1px, transparent 1px)',
+            width: 500, height: 500,
+            right: '-5%', top: '-10%',
+            background: 'rgba(34,211,238,0.12)',
+            filter: 'blur(200px)',
+            animation: 'orbDriftA 10s ease-in-out infinite alternate',
+          }}
+        />
+        <div
+          className="absolute rounded-full"
+          style={{
+            width: 600, height: 600,
+            left: '-15%', bottom: '-10%',
+            background: 'rgba(139,92,246,0.10)',
+            filter: 'blur(240px)',
+            animation: 'orbDriftB 12s ease-in-out infinite alternate',
+          }}
+        />
+        {/* Grid overlay */}
+        <div
+          className="absolute inset-0 hidden md:block"
+          style={{
+            backgroundImage: 'linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px)',
             backgroundSize: '64px 64px',
           }}
         />
       </div>
 
-      {/* Main layout */}
-      <div className="relative z-10 w-full max-w-6xl grid lg:grid-cols-2 gap-12 items-center">
+      <style>{`
+        @keyframes orbDriftA {
+          from { transform: translate(0, 0); }
+          to { transform: translate(-30px, 20px); }
+        }
+        @keyframes orbDriftB {
+          from { transform: translate(0, 0); }
+          to { transform: translate(25px, -20px); }
+        }
+        @keyframes logoPulse {
+          0%, 100% { transform: scale(1); opacity: 0.85; }
+          50% { transform: scale(1.02); opacity: 1; }
+        }
+      `}</style>
 
-        {/* Left Side — Brand panel */}
-        <div className="hidden lg:flex flex-col gap-10 animate-in fade-in slide-in-from-left-8 duration-700">
-          {/* Logo */}
-          <div>
-            <img src={activeLogo} alt="RealSync" className="h-10 w-auto" />
-          </div>
+      {/* ── Logo ── */}
+      <div
+        className="relative z-10 mb-4"
+        style={{ animation: 'logoPulse 3s ease-in-out infinite' }}
+      >
+        <img
+          src={logoWhite}
+          alt="RealSync"
+          className="w-auto"
+          style={{ height: 80 }}
+        />
+      </div>
 
-          {/* Headline */}
-          <div className="space-y-4">
-            <h1 className="text-5xl font-bold text-white leading-[1.1] tracking-tight">
-              Join{' '}
-              <span className="bg-gradient-to-r from-violet-400 to-cyan-400 bg-clip-text text-transparent">
-                RealSync.
-              </span>
-            </h1>
-            <p className="text-gray-400 text-base leading-relaxed max-w-md">
-              Create your account and start protecting your meetings with AI-powered deepfake detection and real-time security analytics.
-            </p>
-          </div>
+      {/* ── Tagline ── */}
+      <p
+        className="relative z-10 mb-8 text-sm"
+        style={{ color: 'rgba(255,255,255,0.45)', fontFamily: 'Inter, sans-serif' }}
+      >
+        AI-Powered Meeting Security
+      </p>
 
-          {/* Social proof stats */}
-          <div
-            className="grid grid-cols-3 gap-4 p-6 rounded-2xl border border-white/7"
-            style={{ background: 'rgba(255,255,255,0.025)' }}
-          >
-            {SOCIAL_PROOF.map((item, i) => (
-              <div key={i} className="text-center">
-                <div className="text-2xl font-bold tracking-tight mb-1 bg-gradient-to-r from-cyan-400 to-violet-400 bg-clip-text text-transparent">
-                  {item.label}
-                </div>
-                <div className="text-gray-600 text-xs">{item.desc}</div>
+      {/* ── Glass card ── */}
+      <div
+        ref={cardRef}
+        className="relative z-10 w-full max-w-[420px] overflow-hidden"
+        style={{
+          background: 'rgba(255,255,255,0.04)',
+          backdropFilter: 'blur(20px) saturate(120%)',
+          WebkitBackdropFilter: 'blur(20px) saturate(120%)',
+          border: '1px solid rgba(255,255,255,0.08)',
+          borderRadius: 20,
+          padding: '40px',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.03) inset',
+        }}
+      >
+        {/* Scan line */}
+        <ScanLine containerRef={cardRef} />
+
+        {signupComplete ? (
+          /* ── Success screen ── */
+          <div className="flex flex-col items-center gap-5 text-center py-3">
+            <div className="relative inline-block">
+              <div
+                className="flex items-center justify-center rounded-2xl"
+                style={{
+                  width: 72, height: 72,
+                  background: 'linear-gradient(135deg, #22d3ee, #3b82f6)',
+                  boxShadow: '0 0 32px rgba(34,211,238,0.3)',
+                }}
+              >
+                <MailCheck className="w-9 h-9 text-white" strokeWidth={1.8} />
               </div>
-            ))}
-          </div>
-
-          {/* Corporate email requirement callout */}
-          <div className="flex items-start gap-4 p-4 rounded-2xl bg-gradient-to-r from-orange-500/8 to-transparent border border-orange-500/18">
-            <div className="w-10 h-10 rounded-xl bg-orange-500/12 border border-orange-500/20 flex items-center justify-center flex-shrink-0">
-              <AlertTriangle className="w-5 h-5 text-orange-400" />
+              <div
+                className="absolute -bottom-2.5 -left-2.5 flex items-center justify-center rounded-full"
+                style={{
+                  width: 30, height: 30,
+                  background: '#10b981',
+                  boxShadow: '0 0 0 3px #08080c',
+                }}
+              >
+                <CheckCircle2 className="w-4 h-4 text-white" strokeWidth={2.5} />
+              </div>
             </div>
-            <div>
-              <h3 className="text-white text-sm font-semibold mb-1">Corporate Email Required</h3>
-              <p className="text-gray-500 text-xs leading-relaxed">
-                Personal email providers (Gmail, Yahoo, Outlook, etc.) are not accepted.
-                Please use your corporate or institutional email address.
-              </p>
-            </div>
-          </div>
 
-          {/* Trust line */}
-          <div className="flex items-center gap-2 text-gray-600 text-xs">
-            <Users className="w-3.5 h-3.5" />
-            <span>Join organizations using RealSync to secure their meetings</span>
-          </div>
-        </div>
+            <h2 className="text-white text-2xl font-bold tracking-tight">Account Created!</h2>
 
-        {/* Right Side — Form card */}
-        <div className="w-full">
-          <div
-            className="rounded-3xl p-8 border border-white/8 shadow-2xl relative overflow-hidden"
-            style={{
-              background: 'rgba(15,15,22,0.85)',
-              backdropFilter: 'blur(32px) saturate(150%)',
-              WebkitBackdropFilter: 'blur(32px) saturate(150%)',
-              boxShadow: '0 24px 64px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.04)',
-            }}
-          >
-            {/* Top shimmer line */}
             <div
-              className="absolute top-0 left-8 right-8 h-px"
-              style={{ background: 'linear-gradient(90deg, transparent, rgba(139,92,246,0.5), rgba(34,211,238,0.5), transparent)' }}
-            />
-
-            {/* Mobile logo */}
-            <div className="lg:hidden flex justify-center mb-6">
-              <img src={activeLogo} alt="RealSync" className="h-8 w-auto" />
+              className="text-sm rounded-xl px-4 py-3 w-full"
+              style={{ color: '#10b981', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.22)' }}
+            >
+              Account created! Check your inbox for a confirmation email, then sign in.
             </div>
 
-            {signupComplete ? (
-              /* Success screen */
-              <div className="flex flex-col items-center gap-5 text-center py-3">
-                {/* Icon */}
-                <div className="relative inline-block">
-                  <div
-                    className="w-18 h-18 rounded-2xl flex items-center justify-center"
-                    style={{
-                      width: 72, height: 72,
-                      background: 'linear-gradient(135deg, #22d3ee, #3b82f6)',
-                      boxShadow: '0 0 32px rgba(34,211,238,0.3)',
-                    }}
-                  >
-                    <MailCheck className="w-9 h-9 text-white" strokeWidth={1.8} />
-                  </div>
-                  <div
-                    className="absolute -bottom-2.5 -left-2.5 flex items-center justify-center rounded-full"
-                    style={{
-                      width: 30, height: 30,
-                      background: '#10b981',
-                      boxShadow: '0 0 0 3px #0a0a14',
-                    }}
-                  >
-                    <CheckCircle2 className="w-4 h-4 text-white" strokeWidth={2.5} />
-                  </div>
-                </div>
+            <p className="text-sm leading-relaxed max-w-xs" style={{ color: 'rgba(255,255,255,0.4)' }}>
+              We've sent a verification link to your registered corporate email. Please verify your identity to unlock real-time deepfake protection.
+            </p>
 
-                <h2 className="text-white text-2xl font-bold tracking-tight">Account Created!</h2>
+            <Button
+              onClick={onSwitchToLogin}
+              className="w-full h-12 text-white font-bold rounded-xl flex items-center justify-center gap-2"
+              style={{
+                background: 'linear-gradient(135deg, #22d3ee, #3b82f6)',
+                boxShadow: '0 0 24px rgba(34,211,238,0.25)',
+              }}
+            >
+              <LogIn className="w-4 h-4" />
+              Back to Sign In
+            </Button>
 
-                <div className="text-sm text-emerald-400 bg-emerald-500/8 border border-emerald-500/20 rounded-xl px-4 py-3 w-full">
-                  Account created! Check your inbox for a confirmation email, then sign in.
-                </div>
-
-                <p className="text-gray-500 text-sm leading-relaxed max-w-xs">
-                  We've sent a verification link to your registered corporate email. Please verify your identity to unlock real-time deepfake protection.
-                </p>
-
-                <Button
-                  onClick={onSwitchToLogin}
-                  className="w-full h-12 text-white font-bold rounded-xl"
-                  style={{
-                    background: 'linear-gradient(135deg, #22d3ee, #3b82f6)',
-                    boxShadow: '0 0 24px rgba(34,211,238,0.2), 0 4px 16px rgba(0,0,0,0.3)',
-                  }}
-                >
-                  <LogIn className="w-4 h-4 mr-2" />
-                  Back to Sign In
-                </Button>
-
-                <div className="space-y-1.5 w-full">
-                  <p className="text-gray-600 text-xs">Didn't receive the email?</p>
-                  <button
-                    onClick={handleResendEmail}
-                    disabled={resendCooldown > 0 || resending}
-                    className={`text-sm font-semibold transition-colors flex items-center justify-center gap-1.5 w-full ${
-                      resendCooldown > 0 || resending
-                        ? 'text-gray-600 cursor-not-allowed'
-                        : 'text-cyan-400 hover:text-cyan-300'
-                    }`}
-                  >
-                    {resending ? (
-                      <><RefreshCw className="w-3.5 h-3.5 animate-spin" />Sending...</>
-                    ) : resendCooldown > 0 ? (
-                      `Resend in ${resendCooldown}s`
-                    ) : (
-                      'Resend Verification Email'
-                    )}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              /* Sign up form */
-              <div className="space-y-5">
-                {/* Header */}
-                <div>
-                  <h2 className="text-white text-2xl font-bold tracking-tight mb-1.5">Create an account</h2>
-                  <p className="text-gray-500 text-sm">Sign up with your corporate email</p>
-                </div>
-
-                {/* Email */}
-                <div className="space-y-2">
-                  <label className="text-gray-400 text-xs uppercase tracking-widest font-semibold block">Corporate Email</label>
-                  <div className="relative">
-                    <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
-                    <Input
-                      type="email"
-                      placeholder="you@company.com"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      className="bg-white/4 border-white/8 text-white placeholder:text-gray-600 h-12 pl-10 rounded-xl focus:bg-white/6 focus:border-violet-400/60 focus:ring-violet-400/20 transition-all"
-                    />
-                  </div>
-                </div>
-
-                {/* Password */}
-                <div className="space-y-2">
-                  <label className="text-gray-400 text-xs uppercase tracking-widest font-semibold block">Password</label>
-                  <div className="relative">
-                    <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
-                    <Input
-                      type={showPassword ? 'text' : 'password'}
-                      placeholder="Min. 6 characters"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="bg-white/4 border-white/8 text-white placeholder:text-gray-600 h-12 pl-10 pr-12 rounded-xl focus:bg-white/6 focus:border-violet-400/60 focus:ring-violet-400/20 transition-all"
-                    />
-                    <button
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-300 transition-colors p-1"
-                    >
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-
-                  {/* Password strength */}
-                  {password && (
-                    <div className="space-y-1.5 pt-1">
-                      <div className="h-1.5 w-full rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
-                        <div
-                          className="h-full rounded-full transition-all duration-300"
-                          style={{ width: `${(strength.score / 4) * 100}%`, background: strength.barHex }}
-                        />
-                      </div>
-                      <p className={`text-xs font-medium ${strength.textColor}`}>{strength.label}</p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Confirm password */}
-                <div className="space-y-2">
-                  <label className="text-gray-400 text-xs uppercase tracking-widest font-semibold block">Confirm Password</label>
-                  <div className="relative">
-                    <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
-                    <Input
-                      type={showConfirm ? 'text' : 'password'}
-                      placeholder="Re-enter password"
-                      value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
-                      className="bg-white/4 border-white/8 text-white placeholder:text-gray-600 h-12 pl-10 pr-12 rounded-xl focus:bg-white/6 focus:border-violet-400/60 focus:ring-violet-400/20 transition-all"
-                    />
-                    <button
-                      onClick={() => setShowConfirm(!showConfirm)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-300 transition-colors p-1"
-                    >
-                      {showConfirm ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Mobile domain notice */}
-                <div className="lg:hidden flex items-center gap-2 text-xs text-gray-600">
-                  <AlertTriangle className="w-3.5 h-3.5 text-orange-400 flex-shrink-0" />
-                  <span>Personal emails (Gmail, Yahoo, etc.) not accepted</span>
-                </div>
-
-                {/* Create account button */}
-                <Button
-                  onClick={handleSignUp}
-                  disabled={isSubmitting}
-                  className="w-full h-12 text-white font-bold rounded-xl shadow-lg transition-all hover:scale-[1.01] active:scale-[0.99]"
-                  style={{
-                    background: 'linear-gradient(135deg, #8b5cf6, #22d3ee)',
-                    boxShadow: '0 0 24px rgba(139,92,246,0.2), 0 4px 16px rgba(0,0,0,0.3)',
-                  }}
-                >
-                  {isSubmitting ? (
-                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Creating Account...</>
-                  ) : (
-                    'Create Account'
-                  )}
-                </Button>
-
-                {/* Divider */}
-                <div className="flex items-center gap-3">
-                  <div className="flex-1 h-px bg-white/6" />
-                  <span className="text-gray-600 text-xs font-medium tracking-wide">Or sign up with</span>
-                  <div className="flex-1 h-px bg-white/6" />
-                </div>
-
-                {/* OAuth buttons */}
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    onClick={async () => {
-                      const { error } = await supabase.auth.signInWithOAuth({
-                        provider: 'google',
-                        options: { redirectTo: window.location.origin },
-                      });
-                      if (error) setFormError(error.message);
-                    }}
-                    className="flex items-center justify-center gap-2.5 h-11 rounded-xl border border-white/8 bg-white/3 text-gray-300 text-sm font-medium hover:bg-white/7 hover:border-white/16 hover:text-white transition-all"
-                  >
-                    <GoogleLogo />
-                    Google
-                  </button>
-                  <button
-                    onClick={async () => {
-                      const { error } = await supabase.auth.signInWithOAuth({
-                        provider: 'azure',
-                        options: { redirectTo: window.location.origin, scopes: 'email profile openid' },
-                      });
-                      if (error) setFormError(error.message);
-                    }}
-                    className="flex items-center justify-center gap-2.5 h-11 rounded-xl border border-white/8 bg-white/3 text-gray-300 text-sm font-medium hover:bg-white/7 hover:border-white/16 hover:text-white transition-all"
-                  >
-                    <MicrosoftLogo />
-                    Microsoft
-                  </button>
-                </div>
-
-                {/* Form error */}
-                {formError && (
-                  <div className="text-sm text-red-400 bg-red-500/8 border border-red-500/20 rounded-xl px-4 py-3 flex items-start gap-2">
-                    <div className="w-1.5 h-1.5 rounded-full bg-red-400 mt-1.5 flex-shrink-0" />
-                    <span>{formError}</span>
-                  </div>
+            <div className="space-y-1.5 w-full">
+              <p className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>Didn't receive the email?</p>
+              <button
+                onClick={handleResendEmail}
+                disabled={resendCooldown > 0 || resending}
+                className="text-sm font-semibold flex items-center justify-center gap-1.5 w-full transition-opacity"
+                style={{
+                  color: resendCooldown > 0 || resending ? 'rgba(255,255,255,0.3)' : '#22D3EE',
+                  cursor: resendCooldown > 0 || resending ? 'not-allowed' : 'pointer',
+                  background: 'none', border: 'none',
+                }}
+              >
+                {resending ? (
+                  <><RefreshCw className="w-3.5 h-3.5 animate-spin" />Sending...</>
+                ) : resendCooldown > 0 ? (
+                  `Resend in ${resendCooldown}s`
+                ) : (
+                  'Resend Verification Email'
                 )}
+              </button>
+            </div>
+          </div>
+        ) : (
+          /* ── Sign up form ── */
+          <div className="space-y-4">
+            {/* Header */}
+            <div>
+              <h2 className="text-white text-2xl font-bold tracking-tight mb-1.5">Create an account</h2>
+              <p className="text-sm" style={{ color: 'rgba(255,255,255,0.4)' }}>Sign up with your corporate email</p>
+            </div>
 
-                {/* Domain restriction notice */}
-                <div className="flex items-start gap-2.5 p-3 rounded-xl bg-orange-500/6 border border-orange-500/16">
-                  <AlertTriangle className="w-3.5 h-3.5 text-orange-400 mt-0.5 flex-shrink-0" />
-                  <span className="text-gray-500 text-xs leading-relaxed">
-                    Personal email providers (Gmail, Yahoo, Outlook, etc.) are not accepted. Use your corporate or institutional email.
-                  </span>
-                </div>
+            {/* Email */}
+            <div className="space-y-2">
+              <label
+                className="block uppercase tracking-widest font-medium"
+                style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', letterSpacing: '0.1em' }}
+              >
+                Corporate Email
+              </label>
+              <div className="relative">
+                <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'rgba(255,255,255,0.3)' }} />
+                <Input
+                  type="email"
+                  placeholder="you@company.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="text-white h-12 pl-10 rounded-xl transition-all"
+                  style={{
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                  }}
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = 'rgba(34,211,238,0.5)';
+                    e.currentTarget.style.boxShadow = '0 0 0 3px rgba(34,211,238,0.1)';
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
+                    e.currentTarget.style.boxShadow = 'none';
+                  }}
+                />
+              </div>
+            </div>
 
-                {/* Switch to sign in */}
-                <div className="pt-4 border-t border-white/6 text-center">
-                  <p className="text-gray-500 text-sm">
-                    Already have an account?{' '}
-                    <button
-                      onClick={onSwitchToLogin}
-                      className="text-cyan-400 hover:text-cyan-300 font-semibold transition-colors"
-                    >
-                      Sign in
-                    </button>
-                  </p>
+            {/* Password */}
+            <div className="space-y-2">
+              <label
+                className="block uppercase tracking-widest font-medium"
+                style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', letterSpacing: '0.1em' }}
+              >
+                Password
+              </label>
+              <div className="relative">
+                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'rgba(255,255,255,0.3)' }} />
+                <Input
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="Min. 6 characters"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="text-white h-12 pl-10 pr-12 rounded-xl transition-all"
+                  style={{
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                  }}
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = 'rgba(34,211,238,0.5)';
+                    e.currentTarget.style.boxShadow = '0 0 0 3px rgba(34,211,238,0.1)';
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
+                    e.currentTarget.style.boxShadow = 'none';
+                  }}
+                />
+                <button
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 transition-colors p-1"
+                  style={{ color: 'rgba(255,255,255,0.3)', background: 'none', border: 'none', cursor: 'pointer' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.3)'; }}
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+
+              {/* Password strength */}
+              {password && (
+                <div className="space-y-1.5 pt-1">
+                  <div className="h-1.5 w-full rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
+                    <div
+                      className="h-full rounded-full transition-all duration-300"
+                      style={{ width: `${(strength.score / 4) * 100}%`, background: strength.barHex }}
+                    />
+                  </div>
+                  <p className="text-xs font-medium" style={{ color: strength.barHex }}>{strength.label}</p>
                 </div>
+              )}
+            </div>
+
+            {/* Confirm password */}
+            <div className="space-y-2">
+              <label
+                className="block uppercase tracking-widest font-medium"
+                style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', letterSpacing: '0.1em' }}
+              >
+                Confirm Password
+              </label>
+              <div className="relative">
+                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'rgba(255,255,255,0.3)' }} />
+                <Input
+                  type={showConfirm ? 'text' : 'password'}
+                  placeholder="Re-enter password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="text-white h-12 pl-10 pr-12 rounded-xl transition-all"
+                  style={{
+                    background: 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                  }}
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = 'rgba(34,211,238,0.5)';
+                    e.currentTarget.style.boxShadow = '0 0 0 3px rgba(34,211,238,0.1)';
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
+                    e.currentTarget.style.boxShadow = 'none';
+                  }}
+                />
+                <button
+                  onClick={() => setShowConfirm(!showConfirm)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 transition-colors p-1"
+                  style={{ color: 'rgba(255,255,255,0.3)', background: 'none', border: 'none', cursor: 'pointer' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.3)'; }}
+                >
+                  {showConfirm ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Form error */}
+            {formError && (
+              <div
+                className="text-sm rounded-xl px-4 py-3 flex items-start gap-2"
+                style={{ color: '#f87171', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}
+              >
+                <div className="w-1.5 h-1.5 rounded-full bg-red-400 mt-1.5 flex-shrink-0" />
+                <span>{formError}</span>
               </div>
             )}
 
-            {/* SSL badge */}
-            <div className="mt-6 flex items-center justify-center gap-2 text-gray-600 text-xs">
-              <Shield className="w-3 h-3" />
-              <span>Protected by 256-bit SSL encryption</span>
+            {/* Create account button */}
+            <Button
+              onClick={handleSignUp}
+              disabled={isSubmitting}
+              className="w-full h-12 text-white font-bold rounded-xl transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2"
+              style={{
+                background: 'linear-gradient(135deg, #22d3ee, #3b82f6)',
+                boxShadow: '0 0 24px rgba(34,211,238,0.25)',
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 0 36px rgba(34,211,238,0.4)'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 0 24px rgba(34,211,238,0.25)'; }}
+            >
+              {isSubmitting ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Creating Account...</>
+              ) : (
+                <>Create Account <ArrowRight className="w-4 h-4" /></>
+              )}
+            </Button>
+
+            {/* Divider */}
+            <div className="flex items-center gap-3">
+              <div className="flex-1 h-px" style={{ background: 'rgba(255,255,255,0.06)' }} />
+              <span className="text-xs font-medium tracking-wide" style={{ color: 'rgba(255,255,255,0.3)' }}>or</span>
+              <div className="flex-1 h-px" style={{ background: 'rgba(255,255,255,0.06)' }} />
+            </div>
+
+            {/* OAuth buttons */}
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={async () => {
+                  const { error } = await supabase.auth.signInWithOAuth({
+                    provider: 'google',
+                    options: { redirectTo: window.location.origin },
+                  });
+                  if (error) setFormError(error.message);
+                }}
+                className="flex items-center justify-center gap-2.5 h-11 rounded-xl text-sm font-medium transition-all"
+                style={{
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  background: 'rgba(255,255,255,0.05)',
+                  color: 'rgba(255,255,255,0.7)',
+                  cursor: 'pointer',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.18)';
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.09)';
+                  e.currentTarget.style.color = '#ffffff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
+                  e.currentTarget.style.color = 'rgba(255,255,255,0.7)';
+                }}
+              >
+                <GoogleLogo />
+                Google
+              </button>
+              <button
+                onClick={async () => {
+                  const { error } = await supabase.auth.signInWithOAuth({
+                    provider: 'azure',
+                    options: { redirectTo: window.location.origin, scopes: 'email profile openid' },
+                  });
+                  if (error) setFormError(error.message);
+                }}
+                className="flex items-center justify-center gap-2.5 h-11 rounded-xl text-sm font-medium transition-all"
+                style={{
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  background: 'rgba(255,255,255,0.05)',
+                  color: 'rgba(255,255,255,0.7)',
+                  cursor: 'pointer',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.18)';
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.09)';
+                  e.currentTarget.style.color = '#ffffff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
+                  e.currentTarget.style.color = 'rgba(255,255,255,0.7)';
+                }}
+              >
+                <MicrosoftLogo />
+                Microsoft
+              </button>
+            </div>
+
+            {/* Domain restriction notice */}
+            <div
+              className="flex items-start gap-2.5 p-3 rounded-xl"
+              style={{ background: 'rgba(249,115,22,0.06)', border: '1px solid rgba(249,115,22,0.16)' }}
+            >
+              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" style={{ color: '#f97316' }} />
+              <span className="text-xs leading-relaxed" style={{ color: 'rgba(255,255,255,0.35)' }}>
+                Personal email providers (Gmail, Yahoo, Outlook, etc.) are not accepted. Use your corporate or institutional email.
+              </span>
+            </div>
+
+            {/* Switch to sign in */}
+            <div
+              className="pt-4 text-center"
+              style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}
+            >
+              <p className="text-sm" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                Already have an account?{' '}
+                <button
+                  onClick={onSwitchToLogin}
+                  className="font-semibold transition-opacity hover:opacity-75"
+                  style={{ color: '#22D3EE', background: 'none', border: 'none', cursor: 'pointer' }}
+                >
+                  Sign in
+                </button>
+              </p>
             </div>
           </div>
+        )}
+
+        {/* SSL badge */}
+        <div className="mt-6 flex items-center justify-center gap-2 text-xs" style={{ color: 'rgba(255,255,255,0.25)' }}>
+          <Shield className="w-3 h-3" />
+          <span>Protected by 256-bit SSL encryption</span>
         </div>
       </div>
     </div>
