@@ -1,26 +1,53 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
 } from 'recharts'
 import {
   FileText, Calendar, Clock, Users, AlertTriangle, AlertCircle,
-  Info, Download, File, Database,
+  Info, Download, File, Database, Loader,
 } from 'lucide-react'
 import $ from '../lib/tokens'
 import { EASE, LABEL_STYLE, MONO_STYLE, trustColor, SEVERITY_CONFIG } from '../lib/tokens'
 import { REPORTS } from '../lib/mockData'
-import type { Report, AlertSeverity } from '../lib/mockData'
+import type { AlertSeverity } from '../lib/mockData'
+import { authFetch } from '../lib/api'
+import { useSessionContext } from '../contexts/SessionContext'
 
-// Export helpers
-function downloadJson(report: Report) {
+interface TrustPoint { t: string; score: number }
+
+interface AlertItem {
+  id: string | number
+  sev: AlertSeverity
+  cat: string
+  msg: string
+  time: string
+}
+
+interface ReportData {
+  id: string
+  title: string
+  date: string
+  duration: string
+  durationMins: number
+  participants: number
+  trustAvg: number
+  alerts: { total: number; critical: number; high: number; medium: number; low: number }
+  timeline: AlertItem[]
+  trustCurve: TrustPoint[]
+  sessionId?: string
+}
+
+// --- Export helpers ---
+
+function downloadJson(report: ReportData) {
   const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a'); a.href = url; a.download = `${report.id}.json`; a.click()
   URL.revokeObjectURL(url)
 }
 
-function downloadCsv(report: Report) {
+function downloadCsv(report: ReportData) {
   const rows = [
     ['Time', 'Severity', 'Category', 'Message'],
     ...report.timeline.map((t) => [t.time, t.sev, t.cat, t.msg]),
@@ -32,8 +59,7 @@ function downloadCsv(report: Report) {
   URL.revokeObjectURL(url)
 }
 
-function downloadPdf(report: Report) {
-  // Simple text export (no jsPDF dependency)
+function downloadPdf(report: ReportData) {
   const txt = `RealSync Session Report\n${report.title}\nDate: ${report.date}\nTrust Avg: ${report.trustAvg}%\nAlerts: ${report.alerts.total}\n\nTimeline:\n${report.timeline.map((t) => `[${t.time}] ${t.sev.toUpperCase()} — ${t.cat}: ${t.msg}`).join('\n')}`
   const blob = new Blob([txt], { type: 'text/plain' })
   const url = URL.createObjectURL(blob)
@@ -48,7 +74,6 @@ const SEVERITY_ICONS: Record<AlertSeverity, typeof AlertCircle> = {
   low: Info,
 }
 
-// Export button
 function ExportBtn({ icon: Icon, label, onClick }: { icon: typeof Download; label: string; onClick: () => void }) {
   const [hov, setHov] = useState(false)
   return (
@@ -69,8 +94,7 @@ function ExportBtn({ icon: Icon, label, onClick }: { icon: typeof Download; labe
   )
 }
 
-// Report list item (desktop sidebar)
-function ReportItem({ report, selected, delay, onClick }: { report: Report; selected: boolean; delay: number; onClick: () => void }) {
+function ReportItem({ report, selected, delay, onClick }: { report: ReportData; selected: boolean; delay: number; onClick: () => void }) {
   const [hov, setHov] = useState(false)
   const color = trustColor(report.trustAvg)
   return (
@@ -101,8 +125,7 @@ function ReportItem({ report, selected, delay, onClick }: { report: Report; sele
   )
 }
 
-// Chart tooltip
-function ChartTooltip({ active, payload, label }: any) {
+function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: { value: number }[]; label?: string }) {
   if (!active || !payload?.length) return null
   return (
     <div style={{ background: $.bg2, border: `1px solid ${$.b2}`, borderRadius: 8, padding: '8px 12px', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
@@ -112,11 +135,10 @@ function ChartTooltip({ active, payload, label }: any) {
   )
 }
 
-// Full report detail panel
-function ReportDetail({ report }: { report: Report }) {
+function ReportDetail({ report }: { report: ReportData }) {
   const isMobile = window.innerWidth <= 768
   const trustCol = trustColor(report.trustAvg)
-  const yMin = Math.max(60, Math.min(...report.trustCurve.map((p) => p.score)) - 5)
+  const yMin = report.trustCurve.length > 0 ? Math.max(60, Math.min(...report.trustCurve.map((p) => p.score)) - 5) : 60
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 10 : 14, height: '100%' }}>
@@ -203,34 +225,36 @@ function ReportDetail({ report }: { report: Report }) {
       </div>
 
       {/* Trust curve chart */}
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, delay: 0.15, ease: EASE }}
-        style={{ background: $.bg1, border: `1px solid ${$.b1}`, borderRadius: 14, padding: '16px 16px 8px' }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <span style={LABEL_STYLE}>Trust Score Timeline</span>
-          <span style={{ fontSize: 10, color: $.t4, ...MONO_STYLE }}>{report.duration}</span>
-        </div>
-        <div style={{ height: 120 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={report.trustCurve} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
-              <defs>
-                <linearGradient id={`report-fill-${report.id}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={trustCol} stopOpacity={0.2} />
-                  <stop offset="100%" stopColor={trustCol} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="rgba(255,255,255,0.03)" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="t" tick={{ fontSize: 10, fill: $.t4 }} axisLine={false} tickLine={false} />
-              <YAxis domain={[yMin, 100]} tick={{ fontSize: 10, fill: $.t4 }} axisLine={false} tickLine={false} />
-              <Tooltip content={<ChartTooltip />} cursor={{ stroke: $.b2 }} />
-              <Area type="monotone" dataKey="score" stroke={trustCol} strokeWidth={2} fill={`url(#report-fill-${report.id})`} dot={false} activeDot={{ r: 4, fill: trustCol, stroke: $.bg0, strokeWidth: 2 }} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </motion.div>
+      {report.trustCurve.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.15, ease: EASE }}
+          style={{ background: $.bg1, border: `1px solid ${$.b1}`, borderRadius: 14, padding: '16px 16px 8px' }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <span style={LABEL_STYLE}>Trust Score Timeline</span>
+            <span style={{ fontSize: 10, color: $.t4, ...MONO_STYLE }}>{report.duration}</span>
+          </div>
+          <div style={{ height: 120 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={report.trustCurve} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+                <defs>
+                  <linearGradient id={`report-fill-${report.id}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={trustCol} stopOpacity={0.2} />
+                    <stop offset="100%" stopColor={trustCol} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="rgba(255,255,255,0.03)" strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="t" tick={{ fontSize: 10, fill: $.t4 }} axisLine={false} tickLine={false} />
+                <YAxis domain={[yMin, 100]} tick={{ fontSize: 10, fill: $.t4 }} axisLine={false} tickLine={false} />
+                <Tooltip content={<ChartTooltip />} cursor={{ stroke: $.b2 }} />
+                <Area type="monotone" dataKey="score" stroke={trustCol} strokeWidth={2} fill={`url(#report-fill-${report.id})`} dot={false} activeDot={{ r: 4, fill: trustCol, stroke: $.bg0, strokeWidth: 2 }} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </motion.div>
+      )}
 
       {/* Alert timeline */}
       <motion.div
@@ -284,24 +308,147 @@ function ReportDetail({ report }: { report: Report }) {
   )
 }
 
+// Convert API report data to UI ReportData shape
+function apiToReport(session: Record<string, unknown>, reportData: Record<string, unknown> | null): ReportData {
+  const summary = (reportData?.summary as Record<string, unknown>) ?? {}
+  const createdAt = (session.createdAt ?? summary.createdAt) as string
+  const endedAt = (session.endedAt ?? summary.endedAt) as string | null
+
+  const durationMs = endedAt
+    ? Math.max(0, new Date(endedAt).getTime() - new Date(createdAt).getTime())
+    : 0
+  const durationMins = Math.floor(durationMs / 60000)
+  const durationSecs = Math.floor((durationMs % 60000) / 1000)
+  const durationStr = durationMins > 0
+    ? `${durationMins}m ${durationSecs}s`
+    : `${durationSecs}s`
+
+  const severityBreakdown = (summary.severityBreakdown as Record<string, number>) ?? {}
+  const totalAlerts = (summary.totalAlerts as number) ?? 0
+
+  return {
+    id: (session.id as string) ?? '',
+    sessionId: (session.id as string) ?? '',
+    title: (session.title ?? summary.title) as string ?? 'Session Report',
+    date: new Date(createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    duration: durationStr,
+    durationMins,
+    participants: 0,
+    trustAvg: 95, // Default — no trust curve in report endpoint
+    alerts: {
+      total: totalAlerts,
+      critical: severityBreakdown.critical ?? 0,
+      high: severityBreakdown.high ?? 0,
+      medium: severityBreakdown.medium ?? 0,
+      low: severityBreakdown.low ?? 0,
+    },
+    timeline: [],
+    trustCurve: [],
+  }
+}
+
 export default function Reports() {
   const isMobile = window.innerWidth <= 768
-  const [selectedId, setSelectedId] = useState('rpt-001')
-  const selected = REPORTS.find((r) => r.id === selectedId) ?? REPORTS[0]
+  const { activeSession } = useSessionContext()
+
+  const [reports, setReports] = useState<ReportData[]>(REPORTS)
+  const [selectedId, setSelectedId] = useState(REPORTS[0]?.id ?? '')
+  const [loadingReports, setLoadingReports] = useState(true)
+
+  // Fetch sessions and their reports from API
+  const fetchReports = useCallback(async () => {
+    try {
+      const sessionsRes = await authFetch('/api/sessions')
+      if (!sessionsRes.ok) throw new Error('Failed to fetch sessions')
+      const sessionsData = await sessionsRes.json() as { sessions?: Record<string, unknown>[] }
+
+      if (!sessionsData.sessions || sessionsData.sessions.length === 0) {
+        // Fall back to mock data
+        setLoadingReports(false)
+        return
+      }
+
+      // Only fetch reports for completed sessions
+      const completed = sessionsData.sessions.filter((s) => s.endedAt)
+      if (completed.length === 0) {
+        setLoadingReports(false)
+        return
+      }
+
+      const reportResults = await Promise.allSettled(
+        completed.map(async (session) => {
+          try {
+            const res = await authFetch(`/api/sessions/${session.id as string}/report`)
+            if (!res.ok) return apiToReport(session, null)
+            const data = await res.json() as Record<string, unknown>
+            return apiToReport(session, data)
+          } catch {
+            return apiToReport(session, null)
+          }
+        })
+      )
+
+      const liveReports = reportResults
+        .filter((r): r is PromiseFulfilledResult<ReportData> => r.status === 'fulfilled')
+        .map((r) => r.value)
+
+      if (liveReports.length > 0) {
+        setReports(liveReports)
+        setSelectedId(liveReports[0].id)
+      }
+    } catch {
+      // Fall back to mock data silently
+    } finally {
+      setLoadingReports(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchReports()
+  }, [fetchReports])
+
+  // Re-fetch when active session ends
+  useEffect(() => {
+    if (!activeSession) {
+      // Session ended — might have new report
+      const timer = setTimeout(fetchReports, 2000)
+      return () => clearTimeout(timer)
+    }
+  }, [activeSession, fetchReports])
+
+  const selected = reports.find((r) => r.id === selectedId) ?? reports[0]
+
+  if (loadingReports) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '40vh', gap: 10, color: $.t4, fontSize: 13 }}>
+        <motion.span animate={{ rotate: 360 }} transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }} style={{ display: 'inline-flex' }}>
+          <Loader size={16} color={$.t4} />
+        </motion.span>
+        Loading reports...
+      </div>
+    )
+  }
+
+  if (!selected) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '40vh', color: $.t4, fontSize: 13 }}>
+        No reports available yet. Complete a session to generate a report.
+      </div>
+    )
+  }
 
   if (isMobile) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {/* Horizontal scroll list */}
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
             <span style={LABEL_STYLE}>Completed Sessions</span>
-            <span style={{ fontSize: 10, ...MONO_STYLE, color: $.t4 }}>{REPORTS.length}</span>
+            <span style={{ fontSize: 10, ...MONO_STYLE, color: $.t4 }}>{reports.length}</span>
           </div>
           <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
-            {REPORTS.map((r, i) => {
+            {reports.map((r, i) => {
               const col = trustColor(r.trustAvg)
-              const selected = r.id === selectedId
+              const isSelected = r.id === selectedId
               return (
                 <motion.button
                   key={r.id}
@@ -311,10 +458,10 @@ export default function Reports() {
                   onClick={() => setSelectedId(r.id)}
                   style={{
                     flexShrink: 0, padding: '10px 12px', borderRadius: 10, cursor: 'pointer',
-                    background: selected ? `${$.cyan}08` : $.bg1,
-                    border: `1px solid ${selected ? `${$.cyan}20` : $.b1}`,
+                    background: isSelected ? `${$.cyan}08` : $.bg1,
+                    border: `1px solid ${isSelected ? `${$.cyan}20` : $.b1}`,
                     textAlign: 'left', fontFamily: 'Inter, sans-serif',
-                    transition: 'all 200ms cubic-bezier(0.4,0,0.2,1)', minWidth: 160,
+                    transition: 'all 200ms', minWidth: 160,
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -343,9 +490,9 @@ export default function Reports() {
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, marginBottom: 2 }}
         >
           <span style={LABEL_STYLE}>Completed Sessions</span>
-          <span style={{ fontSize: 10, ...MONO_STYLE, color: $.t4 }}>{REPORTS.length}</span>
+          <span style={{ fontSize: 10, ...MONO_STYLE, color: $.t4 }}>{reports.length}</span>
         </motion.div>
-        {REPORTS.map((r, i) => (
+        {reports.map((r, i) => (
           <ReportItem
             key={r.id} report={r}
             selected={r.id === selectedId}

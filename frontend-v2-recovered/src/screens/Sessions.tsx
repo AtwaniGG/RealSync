@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Briefcase, Users, Star, Clock, AlertTriangle, Trash2, Monitor, FileText,
@@ -6,8 +6,24 @@ import {
 } from 'lucide-react'
 import $ from '../lib/tokens'
 import { EASE, LABEL_STYLE, MONO_STYLE } from '../lib/tokens'
-import { INITIAL_SESSIONS } from '../lib/mockData'
-import type { Session, SessionType, SessionStatus } from '../lib/mockData'
+import type { SessionType } from '../lib/mockData'
+import { authFetch } from '../lib/api'
+import { useSessionContext } from '../contexts/SessionContext'
+
+type SessionStatus = 'connected' | 'joining' | 'completed' | 'waiting'
+
+interface Session {
+  id: string
+  title: string
+  type: SessionType
+  createdAt: string
+  duration: string
+  status: SessionStatus
+  alerts: number
+  zoomUrl?: string
+  endedAt?: string | null
+  botStatus?: string
+}
 
 const SESSION_TYPE_CONFIG = {
   official: { icon: Star, label: 'Official', color: $.violet, bg: 'rgba(139,92,246,0.10)' },
@@ -18,11 +34,12 @@ const SESSION_TYPE_CONFIG = {
 const STATUS_CONFIG = {
   connected: { label: 'Connected', color: $.green, bg: 'rgba(16,185,129,0.10)', border: 'rgba(16,185,129,0.25)' },
   joining: { label: 'Joining', color: '#F59E0B', bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.25)' },
+  waiting: { label: 'Waiting', color: '#F59E0B', bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.25)' },
   completed: { label: 'Completed', color: $.t3, bg: 'rgba(255,255,255,0.04)', border: 'rgba(255,255,255,0.06)' },
 }
 
 function StatusBadge({ status }: { status: SessionStatus }) {
-  const cfg = STATUS_CONFIG[status]
+  const cfg = STATUS_CONFIG[status] ?? STATUS_CONFIG.completed
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10,
@@ -40,7 +57,7 @@ function StatusBadge({ status }: { status: SessionStatus }) {
           />
         </span>
       )}
-      {status === 'joining' && (
+      {(status === 'joining' || status === 'waiting') && (
         <motion.span animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 1.1, repeat: Infinity }}>
           <Loader size={8} />
         </motion.span>
@@ -52,7 +69,7 @@ function StatusBadge({ status }: { status: SessionStatus }) {
 }
 
 function TypeBadge({ type }: { type: SessionType }) {
-  const cfg = SESSION_TYPE_CONFIG[type]
+  const cfg = SESSION_TYPE_CONFIG[type] ?? SESSION_TYPE_CONFIG.business
   const Icon = cfg.icon
   return (
     <span style={{
@@ -100,7 +117,7 @@ function StatCard({ label, value, sub, accent, delay }: { label: string; value: 
         flex: 1,
         background: $.bg1, border: `1px solid ${hov ? $.b2 : $.b1}`,
         borderRadius: 14, padding: '16px 18px',
-        transition: 'border-color 200ms cubic-bezier(0.4,0,0.2,1), transform 200ms cubic-bezier(0.4,0,0.2,1)',
+        transition: 'border-color 200ms, transform 200ms',
         transform: hov ? 'translateY(-1px)' : 'translateY(0)',
         position: 'relative', overflow: 'hidden',
       }}
@@ -113,11 +130,46 @@ function StatCard({ label, value, sub, accent, delay }: { label: string; value: 
   )
 }
 
-// Desktop table row
-function TableRow({ session, index, onDelete }: { session: Session; index: number; onDelete: (id: string) => void }) {
+function durationStr(createdAt: string, endedAt?: string | null): string {
+  const start = new Date(createdAt).getTime()
+  const end = endedAt ? new Date(endedAt).getTime() : Date.now()
+  const diffMs = Math.max(0, end - start)
+  const totalSec = Math.floor(diffMs / 1000)
+  const hrs = Math.floor(totalSec / 3600)
+  const mins = Math.floor((totalSec % 3600) / 60)
+  const secs = totalSec % 60
+  if (hrs > 0) return `${hrs}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+}
+
+function apiStatusToLocal(apiSession: Record<string, unknown>): Session {
+  const endedAt = apiSession.endedAt as string | null
+  const botStatus = (apiSession.botStatus as string) ?? 'idle'
+  let status: SessionStatus = 'completed'
+  if (!endedAt) {
+    if (botStatus === 'joining') status = 'joining'
+    else if (botStatus === 'connected' || botStatus === 'streaming') status = 'connected'
+    else status = 'waiting'
+  }
+  const type = (apiSession.meetingType as SessionType) ?? 'business'
+  return {
+    id: apiSession.id as string,
+    title: apiSession.title as string,
+    type: SESSION_TYPE_CONFIG[type] ? type : 'business',
+    createdAt: new Date(apiSession.createdAt as string).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    duration: durationStr(apiSession.createdAt as string, endedAt),
+    status,
+    alerts: 0,
+    zoomUrl: (apiSession.meetingUrl as string) ?? undefined,
+    endedAt,
+    botStatus,
+  }
+}
+
+function TableRow({ session, index, onDelete, onMonitor }: { session: Session; index: number; onDelete: (id: string) => void; onMonitor: (s: Session) => void }) {
   const [hov, setHov] = useState(false)
   const alertColor = session.alerts >= 5 ? $.red : session.alerts >= 2 ? '#F59E0B' : session.alerts === 1 ? $.blue : $.t4
-  const TypeIcon = SESSION_TYPE_CONFIG[session.type].icon
+  const TypeIcon = SESSION_TYPE_CONFIG[session.type]?.icon ?? Briefcase
 
   return (
     <motion.tr
@@ -130,20 +182,20 @@ function TableRow({ session, index, onDelete }: { session: Session; index: numbe
       style={{
         background: hov ? 'rgba(255,255,255,0.022)' : 'transparent',
         borderBottom: `1px solid ${$.b1}`,
-        transition: 'background 200ms cubic-bezier(0.4,0,0.2,1)',
+        transition: 'background 200ms',
       }}
     >
       <td style={{ padding: '13px 16px', verticalAlign: 'middle' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{
             width: 32, height: 32, borderRadius: 9, flexShrink: 0,
-            background: SESSION_TYPE_CONFIG[session.type].bg,
-            border: `1px solid ${SESSION_TYPE_CONFIG[session.type].color}22`,
+            background: SESSION_TYPE_CONFIG[session.type]?.bg ?? $.bg2,
+            border: `1px solid ${SESSION_TYPE_CONFIG[session.type]?.color ?? $.b1}22`,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            transition: 'transform 200ms cubic-bezier(0.4,0,0.2,1)',
+            transition: 'transform 200ms',
             transform: hov ? 'scale(1.07)' : 'scale(1)',
           }}>
-            <TypeIcon size={14} color={SESSION_TYPE_CONFIG[session.type].color} />
+            <TypeIcon size={14} color={SESSION_TYPE_CONFIG[session.type]?.color ?? $.t3} />
           </div>
           <div>
             <div style={{ fontSize: 13, color: $.t1, fontWeight: 500, lineHeight: 1.3 }}>{session.title}</div>
@@ -176,9 +228,9 @@ function TableRow({ session, index, onDelete }: { session: Session; index: numbe
       </td>
       <td style={{ padding: '13px 12px', verticalAlign: 'middle' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, opacity: hov ? 1 : 0, transition: 'opacity 180ms' }}>
-          {session.status !== 'completed' && <IconBtn icon={Monitor} title="Monitor live" color={$.cyan} />}
+          {session.status !== 'completed' && <IconBtn icon={Monitor} title="Monitor live" color={$.cyan} onClick={() => onMonitor(session)} />}
           {session.status === 'completed' && <IconBtn icon={FileText} title="View report" color={$.blue} />}
-          {session.zoomUrl && <IconBtn icon={ExternalLink} title="Open in Zoom" color={$.t2} />}
+          {session.zoomUrl && <IconBtn icon={ExternalLink} title="Open in Zoom" color={$.t2} onClick={() => window.open(session.zoomUrl, '_blank')} />}
           <IconBtn icon={Trash2} title="Delete session" color={$.red} onClick={() => onDelete(session.id)} />
         </div>
       </td>
@@ -186,10 +238,9 @@ function TableRow({ session, index, onDelete }: { session: Session; index: numbe
   )
 }
 
-// Mobile card
-function MobileCard({ session, index, onDelete }: { session: Session; index: number; onDelete: (id: string) => void }) {
+function MobileCard({ session, index, onDelete, onMonitor }: { session: Session; index: number; onDelete: (id: string) => void; onMonitor: (s: Session) => void }) {
   const alertColor = session.alerts >= 5 ? $.red : session.alerts >= 2 ? '#F59E0B' : session.alerts === 1 ? $.blue : $.t4
-  const TypeIcon = SESSION_TYPE_CONFIG[session.type].icon
+  const TypeIcon = SESSION_TYPE_CONFIG[session.type]?.icon ?? Briefcase
 
   return (
     <motion.div
@@ -206,11 +257,11 @@ function MobileCard({ session, index, onDelete }: { session: Session; index: num
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <div style={{
           width: 32, height: 32, borderRadius: 9, flexShrink: 0,
-          background: SESSION_TYPE_CONFIG[session.type].bg,
-          border: `1px solid ${SESSION_TYPE_CONFIG[session.type].color}22`,
+          background: SESSION_TYPE_CONFIG[session.type]?.bg ?? $.bg2,
+          border: `1px solid ${SESSION_TYPE_CONFIG[session.type]?.color ?? $.b1}22`,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
-          <TypeIcon size={14} color={SESSION_TYPE_CONFIG[session.type].color} />
+          <TypeIcon size={14} color={SESSION_TYPE_CONFIG[session.type]?.color ?? $.t3} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13, color: $.t1, fontWeight: 500, lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{session.title}</div>
@@ -230,25 +281,26 @@ function MobileCard({ session, index, onDelete }: { session: Session; index: num
             <AlertTriangle size={9} />{session.alerts}
           </span>
         )}
-        <div style={{ marginLeft: 'auto' }}>
-          <IconBtn icon={Trash2} title="Delete session" color={$.red} onClick={() => onDelete(session.id)} />
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+          {session.status !== 'completed' && <IconBtn icon={Monitor} title="Monitor" color={$.cyan} onClick={() => onMonitor(session)} />}
+          <IconBtn icon={Trash2} title="Delete" color={$.red} onClick={() => onDelete(session.id)} />
         </div>
       </div>
     </motion.div>
   )
 }
 
-// New Session Modal
 function NewSessionModal({ open, onClose, onCreate }: {
-  open: boolean;
-  onClose: () => void;
-  onCreate: (s: Partial<Session>) => void;
+  open: boolean
+  onClose: () => void
+  onCreate: (s: { title: string; type: SessionType; meetingUrl?: string }) => Promise<void>
 }) {
   const isMobile = window.innerWidth <= 768
   const [name, setName] = useState('')
   const [type, setType] = useState<SessionType>('business')
   const [url, setUrl] = useState('')
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
   const canSubmit = name.trim().length > 0 && !loading
 
@@ -258,15 +310,19 @@ function NewSessionModal({ open, onClose, onCreate }: {
     fontFamily: 'Inter, sans-serif', transition: 'border-color 150ms, background 150ms',
   }
 
-  function submit() {
+  async function submit() {
     if (!canSubmit) return
+    setError('')
     setLoading(true)
-    setTimeout(() => {
-      onCreate({ title: name.trim(), type, status: 'joining', zoomUrl: url.trim() || undefined })
+    try {
+      await onCreate({ title: name.trim(), type, meetingUrl: url.trim() || undefined })
       setName(''); setType('business'); setUrl('')
-      setLoading(false)
       onClose()
-    }, 850)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to create session.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -372,7 +428,7 @@ function NewSessionModal({ open, onClose, onCreate }: {
                           border: `1px solid ${selected ? cfg.color + '55' : $.b1}`,
                           borderRadius: 10, cursor: 'pointer',
                           display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7,
-                          transition: 'all 150ms cubic-bezier(0.4,0,0.2,1)', fontFamily: 'Inter, sans-serif',
+                          transition: 'all 150ms', fontFamily: 'Inter, sans-serif',
                         }}
                       >
                         <Icon size={16} color={selected ? cfg.color : $.t3} />
@@ -382,6 +438,12 @@ function NewSessionModal({ open, onClose, onCreate }: {
                   })}
                 </div>
               </div>
+
+              {error && (
+                <div style={{ fontSize: 12, color: $.red, padding: '8px 10px', borderRadius: 8, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                  {error}
+                </div>
+              )}
 
               <div style={{ height: 1, background: $.b1 }} />
 
@@ -408,7 +470,7 @@ function NewSessionModal({ open, onClose, onCreate }: {
                     borderRadius: 10, cursor: canSubmit ? 'pointer' : 'not-allowed',
                     color: canSubmit ? $.cyan : $.t4, fontSize: 13, fontWeight: 600,
                     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                    transition: 'all 180ms cubic-bezier(0.4,0,0.2,1)', fontFamily: 'Inter, sans-serif',
+                    transition: 'all 180ms', fontFamily: 'Inter, sans-serif',
                   }}
                 >
                   {loading
@@ -425,7 +487,7 @@ function NewSessionModal({ open, onClose, onCreate }: {
   )
 }
 
-const FILTER_OPTIONS: { value: string; label: string }[] = [
+const FILTER_OPTIONS = [
   { value: 'all', label: 'All Sessions' },
   { value: 'connected', label: 'Connected' },
   { value: 'joining', label: 'Joining' },
@@ -445,40 +507,94 @@ function ThCell({ children, width }: { children: React.ReactNode; width?: string
 
 export default function Sessions() {
   const isMobile = window.innerWidth <= 768
-  const [sessions, setSessions] = useState<Session[]>(INITIAL_SESSIONS)
+  const { handleStartSession, handleEndSession, activeSession } = useSessionContext()
+
+  const [sessions, setSessions] = useState<Session[]>([])
+  const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [filter, setFilter] = useState('all')
+
+  // Fetch sessions from API
+  const fetchSessions = useCallback(async () => {
+    try {
+      const res = await authFetch('/api/sessions')
+      if (!res.ok) throw new Error('Failed to fetch sessions')
+      const data = await res.json() as { sessions?: Record<string, unknown>[] }
+      if (data.sessions && Array.isArray(data.sessions)) {
+        setSessions(data.sessions.map(apiStatusToLocal))
+      }
+    } catch {
+      // If API fails, sessions remain empty
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchSessions()
+    // Poll every 30s to update status
+    const interval = setInterval(fetchSessions, 30_000)
+    return () => clearInterval(interval)
+  }, [fetchSessions])
 
   const active = sessions.filter((s) => s.status !== 'completed')
   const totalAlerts = sessions.reduce((a, s) => a + s.alerts, 0)
   const completed = sessions.filter((s) => s.status === 'completed').length
-  const connected = sessions.filter((s) => s.status === 'connected').length
 
   const filtered = filter === 'all' ? sessions : sessions.filter((s) => s.status === filter)
 
-  const handleCreate = useCallback((data: Partial<Session>) => {
-    setSessions((prev) => [{
-      ...data,
-      id: `s-${String(prev.length + 1).padStart(3, '0')}`,
-      createdAt: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-    } as Session, ...prev])
-  }, [])
+  const handleCreate = useCallback(async (data: { title: string; type: SessionType; meetingUrl?: string }) => {
+    const res = await authFetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: data.title,
+        meetingType: data.type,
+        meetingUrl: data.meetingUrl || null,
+      }),
+    })
 
-  const handleDelete = useCallback((id: string) => {
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Unknown error' })) as { error?: string }
+      throw new Error(err.error ?? 'Failed to create session')
+    }
+
+    const result = await res.json() as { sessionId: string }
+    handleStartSession(result.sessionId, data.title, data.type)
+
+    // Refresh list
+    await fetchSessions()
+  }, [fetchSessions, handleStartSession])
+
+  const handleDelete = useCallback(async (id: string) => {
+    // If this is the active session, end it first
+    if (activeSession?.sessionId === id) {
+      await handleEndSession()
+    }
+    // Stop on backend
+    try {
+      await authFetch(`/api/sessions/${id}/stop`, { method: 'POST' })
+    } catch {
+      // Best-effort
+    }
     setSessions((prev) => prev.filter((s) => s.id !== id))
-  }, [])
+  }, [activeSession?.sessionId, handleEndSession])
+
+  const handleMonitor = useCallback((session: Session) => {
+    handleStartSession(session.id, session.title, session.type)
+  }, [handleStartSession])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {/* Stats row */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <StatCard label="Active Sessions" value={String(active.length)} sub="Connected or joining" accent={$.green} delay={0.05} />
-        <StatCard label="Total Sessions" value={String(sessions.length)} sub="Across all sessions" accent={$.cyan} delay={0.1} />
-        <StatCard label="Total Alerts" value={String(totalAlerts)} sub="Across all sessions" accent={$.red} delay={0.15} />
-        <StatCard label="Completed Sessions" value={String(completed)} sub="Finished & archived" accent={$.blue} delay={0.2} />
+        <StatCard label="Active Sessions" value={loading ? '…' : String(active.length)} sub="Connected or joining" accent={$.green} delay={0.05} />
+        <StatCard label="Total Sessions" value={loading ? '…' : String(sessions.length)} sub="Across all sessions" accent={$.cyan} delay={0.1} />
+        <StatCard label="Total Alerts" value={loading ? '…' : String(totalAlerts)} sub="Across all sessions" accent={$.red} delay={0.15} />
+        <StatCard label="Completed" value={loading ? '…' : String(completed)} sub="Finished & archived" accent={$.blue} delay={0.2} />
       </div>
 
-      {/* Table header */}
+      {/* Table */}
       <motion.div
         initial={{ opacity: 0, y: -8 }}
         animate={{ opacity: 1, y: 0 }}
@@ -495,17 +611,17 @@ export default function Sessions() {
         }}>
           <div style={{ display: 'flex', gap: 6, overflowX: 'auto' }}>
             {FILTER_OPTIONS.map((opt) => {
-              const active = filter === opt.value
+              const isActive = filter === opt.value
               return (
                 <button
                   key={opt.value}
                   onClick={() => setFilter(opt.value)}
                   style={{
                     padding: '5px 12px', borderRadius: 8, fontSize: 12,
-                    border: `1px solid ${active ? 'rgba(34,211,238,0.30)' : $.b1}`,
-                    background: active ? 'rgba(34,211,238,0.08)' : $.bg2,
-                    color: active ? $.cyan : $.t3, cursor: 'pointer',
-                    fontFamily: 'Inter, sans-serif', fontWeight: active ? 600 : 400,
+                    border: `1px solid ${isActive ? 'rgba(34,211,238,0.30)' : $.b1}`,
+                    background: isActive ? 'rgba(34,211,238,0.08)' : $.bg2,
+                    color: isActive ? $.cyan : $.t3, cursor: 'pointer',
+                    fontFamily: 'Inter, sans-serif', fontWeight: isActive ? 600 : 400,
                     transition: 'all 150ms', whiteSpace: 'nowrap',
                   }}
                 >
@@ -527,12 +643,18 @@ export default function Sessions() {
           </button>
         </div>
 
-        {/* Table or cards */}
-        {isMobile ? (
+        {loading ? (
+          <div style={{ padding: 32, textAlign: 'center', color: $.t4, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            <motion.span animate={{ rotate: 360 }} transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }} style={{ display: 'inline-flex' }}>
+              <Loader size={14} color={$.t4} />
+            </motion.span>
+            Loading sessions...
+          </div>
+        ) : isMobile ? (
           <div style={{ padding: '10px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
             <AnimatePresence>
               {filtered.map((s, i) => (
-                <MobileCard key={s.id} session={s} index={i} onDelete={handleDelete} />
+                <MobileCard key={s.id} session={s} index={i} onDelete={handleDelete} onMonitor={handleMonitor} />
               ))}
             </AnimatePresence>
           </div>
@@ -553,7 +675,7 @@ export default function Sessions() {
               <tbody>
                 <AnimatePresence>
                   {filtered.map((s, i) => (
-                    <TableRow key={s.id} session={s} index={i} onDelete={handleDelete} />
+                    <TableRow key={s.id} session={s} index={i} onDelete={handleDelete} onMonitor={handleMonitor} />
                   ))}
                 </AnimatePresence>
               </tbody>
@@ -561,7 +683,7 @@ export default function Sessions() {
           </div>
         )}
 
-        {filtered.length === 0 && (
+        {!loading && filtered.length === 0 && (
           <div style={{ padding: '32px', textAlign: 'center', color: $.t4, fontSize: 13 }}>
             No sessions found
           </div>

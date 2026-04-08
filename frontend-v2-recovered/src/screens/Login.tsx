@@ -4,6 +4,9 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Mail, Lock, Eye, EyeOff, ArrowRight, Shield, Mic, Brain } from 'lucide-react'
 import $ from '../lib/tokens'
 import { EASE } from '../lib/tokens'
+import { supabase } from '../lib/supabaseClient'
+
+const PROTOTYPE_MODE = import.meta.env.VITE_PROTOTYPE_MODE === '1'
 
 const FEATURES = [
   { icon: Shield, title: 'Deepfake Detection', desc: 'AI-powered visual manipulation analysis in real-time', color: $.cyan },
@@ -20,13 +23,80 @@ export default function Login() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
     if (!email.trim()) { setError('Email is required.'); return }
     if (password.length < 6) { setError('Password must be at least 6 characters.'); return }
+
+    // Prototype mode: skip auth and go directly to dashboard
+    if (PROTOTYPE_MODE) {
+      setLoading(true)
+      setTimeout(() => { setLoading(false); navigate('/') }, 600)
+      return
+    }
+
     setLoading(true)
-    setTimeout(() => { setLoading(false); navigate('/') }, 1000)
+    try {
+      const { error: authError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      })
+
+      if (authError) {
+        const msg = authError.message.toLowerCase()
+        if (msg.includes('invalid login credentials') || msg.includes('invalid credentials')) {
+          setError('Incorrect email or password.')
+        } else if (msg.includes('email not confirmed')) {
+          setError('Please confirm your email before signing in.')
+        } else if (msg.includes('invalid email')) {
+          setError('Invalid email address.')
+        } else {
+          setError(authError.message)
+        }
+        return
+      }
+
+      navigate('/')
+    } catch {
+      setError('Sign in failed. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleGoogleLogin() {
+    setError('')
+    if (PROTOTYPE_MODE) { navigate('/'); return }
+    const { error: oauthError } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin },
+    })
+    if (oauthError) setError(oauthError.message)
+  }
+
+  async function handleMicrosoftLogin() {
+    setError('')
+    if (PROTOTYPE_MODE) { navigate('/'); return }
+    const { error: oauthError } = await supabase.auth.signInWithOAuth({
+      provider: 'azure',
+      options: { redirectTo: window.location.origin, scopes: 'email profile openid' },
+    })
+    if (oauthError) setError(oauthError.message)
+  }
+
+  async function handleForgotPassword() {
+    if (!email.trim()) { setError('Enter your email first to reset password.'); return }
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: window.location.origin,
+    })
+    if (resetError) {
+      setError(resetError.message)
+    } else {
+      setError('')
+      // Show brief success in the error field as green — repurpose for status
+      alert('Password reset email sent! Check your inbox.')
+    }
   }
 
   const loginForm = (
@@ -53,7 +123,7 @@ export default function Login() {
           <div style={{ position: 'relative' }}>
             <Mail size={15} color={$.t4} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }} />
             <input
-              type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+              type="email" value={email} onChange={(e) => { setEmail(e.target.value); setError('') }}
               placeholder="you@company.com"
               style={{
                 width: '100%', padding: '10px 12px 10px 36px',
@@ -73,7 +143,7 @@ export default function Login() {
           <div style={{ position: 'relative' }}>
             <Lock size={15} color={$.t4} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }} />
             <input
-              type={showPw ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)}
+              type={showPw ? 'text' : 'password'} value={password} onChange={(e) => { setPassword(e.target.value); setError('') }}
               placeholder="Enter password"
               style={{
                 width: '100%', padding: '10px 40px 10px 36px',
@@ -108,7 +178,11 @@ export default function Login() {
         </AnimatePresence>
 
         <div style={{ textAlign: 'right', marginTop: -8 }}>
-          <button type="button" style={{ background: 'none', border: 'none', color: $.cyan, fontSize: 12, cursor: 'pointer', padding: 0, fontWeight: 500, transition: 'opacity 150ms' }}>
+          <button
+            type="button"
+            onClick={handleForgotPassword}
+            style={{ background: 'none', border: 'none', color: $.cyan, fontSize: 12, cursor: 'pointer', padding: 0, fontWeight: 500, transition: 'opacity 150ms' }}
+          >
             Forgot password?
           </button>
         </div>
@@ -133,9 +207,50 @@ export default function Login() {
                 transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }}
                 style={{ width: 16, height: 16, border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%' }}
               />
-            : <>Sign in <ArrowRight size={15} /></>
+            : <>Sign in securely <ArrowRight size={15} /></>
           }
         </motion.button>
+
+        {/* Divider */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ flex: 1, height: 1, background: $.b1 }} />
+          <span style={{ fontSize: 11, color: $.t4 }}>Or continue with</span>
+          <div style={{ flex: 1, height: 1, background: $.b1 }} />
+        </div>
+
+        {/* OAuth buttons */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <button
+            type="button"
+            onClick={handleGoogleLogin}
+            style={{
+              padding: '9px 0', borderRadius: 10, border: `1px solid ${$.b1}`,
+              background: $.bg2, color: $.t2, fontSize: 13, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+              fontFamily: 'Inter, sans-serif', transition: 'border-color 150ms, background 150ms',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = $.b2; e.currentTarget.style.background = $.bg3 }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = $.b1; e.currentTarget.style.background = $.bg2 }}
+          >
+            <div style={{ width: 16, height: 16, background: '#fff', borderRadius: 3, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color: '#4285F4' }}>G</div>
+            Google
+          </button>
+          <button
+            type="button"
+            onClick={handleMicrosoftLogin}
+            style={{
+              padding: '9px 0', borderRadius: 10, border: `1px solid ${$.b1}`,
+              background: $.bg2, color: $.t2, fontSize: 13, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+              fontFamily: 'Inter, sans-serif', transition: 'border-color 150ms, background 150ms',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = $.b2; e.currentTarget.style.background = $.bg3 }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = $.b1; e.currentTarget.style.background = $.bg2 }}
+          >
+            <div style={{ width: 16, height: 16, background: '#0078D4', borderRadius: 3, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color: '#fff' }}>M</div>
+            Microsoft
+          </button>
+        </div>
       </form>
 
       <p style={{ textAlign: 'center', marginTop: 20, fontSize: 13, color: $.t3 }}>
@@ -155,13 +270,11 @@ export default function Login() {
   if (isMobile) {
     return (
       <div style={{ minHeight: '100vh', background: $.bg0, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
-        {/* Orbs */}
         <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
           <div style={{ position: 'absolute', width: 400, height: 400, borderRadius: '50%', background: 'radial-gradient(circle, rgba(34,211,238,0.08) 0%, transparent 65%)', top: -200, right: -100, filter: 'blur(80px)' }} />
           <div style={{ position: 'absolute', width: 400, height: 400, borderRadius: '50%', background: 'radial-gradient(circle, rgba(139,92,246,0.06) 0%, transparent 65%)', bottom: -150, left: -100, filter: 'blur(80px)' }} />
         </div>
 
-        {/* Brand header */}
         <div style={{ padding: '32px 20px 20px', position: 'relative', zIndex: 1 }}>
           <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, ease: EASE }} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
             <div style={{ width: 38, height: 38, borderRadius: 10, background: `linear-gradient(135deg, ${$.cyan}, ${$.violet})`, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 0 20px rgba(34,211,238,0.3)' }}>
@@ -205,7 +318,6 @@ export default function Login() {
 
   return (
     <div style={{ minHeight: '100vh', background: $.bg0, display: 'flex', position: 'relative', overflow: 'hidden' }}>
-      {/* Orbs */}
       <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
         <div style={{ position: 'absolute', width: 700, height: 700, borderRadius: '50%', background: 'radial-gradient(circle, rgba(34,211,238,0.08) 0%, transparent 65%)', top: -300, right: -200, filter: 'blur(100px)' }} />
         <div style={{ position: 'absolute', width: 600, height: 600, borderRadius: '50%', background: 'radial-gradient(circle, rgba(139,92,246,0.06) 0%, transparent 65%)', bottom: -250, left: -100, filter: 'blur(100px)' }} />
@@ -256,3 +368,4 @@ export default function Login() {
     </div>
   )
 }
+
