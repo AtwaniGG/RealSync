@@ -9,7 +9,6 @@ import {
 } from 'lucide-react'
 import $ from '../lib/tokens'
 import { EASE, LABEL_STYLE, MONO_STYLE, trustColor, SEVERITY_CONFIG } from '../lib/tokens'
-import { REPORTS } from '../lib/mockData'
 import type { AlertSeverity } from '../lib/mockData'
 import { authFetch } from '../lib/api'
 import { useSessionContext } from '../contexts/SessionContext'
@@ -351,8 +350,8 @@ export default function Reports() {
   const isMobile = window.innerWidth <= 768
   const { activeSession } = useSessionContext()
 
-  const [reports, setReports] = useState<ReportData[]>(REPORTS)
-  const [selectedId, setSelectedId] = useState(REPORTS[0]?.id ?? '')
+  const [reports, setReports] = useState<ReportData[]>([])
+  const [selectedId, setSelectedId] = useState('')
   const [loadingReports, setLoadingReports] = useState(true)
 
   // Fetch sessions and their reports from API

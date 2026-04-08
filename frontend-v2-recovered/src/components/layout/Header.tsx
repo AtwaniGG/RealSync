@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Moon, Sun, Search, Menu, Clock, Wifi, Video, Settings, LogOut } from 'lucide-react'
+import { Moon, Sun, Search, Menu, Clock, Settings, LogOut } from 'lucide-react'
 import $ from '../../lib/tokens'
 import { getTheme, setTheme, MONO_STYLE } from '../../lib/tokens'
+import { useSessionContext } from '../../contexts/SessionContext'
 
 interface HeaderProps {
   onCmdK: () => void
@@ -14,14 +15,36 @@ export default function Header({ onCmdK, onHamburger }: HeaderProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const isMobile = window.innerWidth <= 768
-  const [elapsed, setElapsed] = useState(872)
+  const [elapsed, setElapsed] = useState(0)
   const [theme, setThemeState] = useState<'dark' | 'light'>(getTheme)
   const [avatarOpen, setAvatarOpen] = useState(false)
 
+  const { profile, supabaseSession, activeSession, handleSignOut } = useSessionContext()
+
+  const PROTOTYPE_MODE = import.meta.env.VITE_PROTOTYPE_MODE === '1'
+
+  const displayName = PROTOTYPE_MODE
+    ? 'Demo User'
+    : (profile?.full_name ?? profile?.username ?? supabaseSession?.user?.email?.split('@')[0] ?? 'User')
+
+  const displayEmail = PROTOTYPE_MODE
+    ? 'demo@realsync.ai'
+    : (supabaseSession?.user?.email ?? '')
+
+  const avatarInitials = displayName
+    .split(' ')
+    .map((n) => n.charAt(0))
+    .slice(0, 2)
+    .join('')
+    .toUpperCase() || 'RS'
+
+  // Session timer — resets when active session changes
   useEffect(() => {
+    setElapsed(0)
+    if (!activeSession) return
     const id = setInterval(() => setElapsed((x) => x + 1), 1000)
     return () => clearInterval(id)
-  }, [])
+  }, [activeSession?.sessionId])
 
   const mm = String(Math.floor(elapsed / 60)).padStart(2, '0')
   const ss = String(elapsed % 60).padStart(2, '0')
@@ -31,12 +54,19 @@ export default function Header({ onCmdK, onHamburger }: HeaderProps) {
     : location.pathname.startsWith('/sessions') ? 'Sessions'
     : location.pathname.startsWith('/reports') ? 'Reports'
     : location.pathname.startsWith('/settings') ? 'Settings'
+    : location.pathname.startsWith('/faq') ? 'FAQ'
     : 'RealSync'
 
   function toggleTheme() {
     const next = theme === 'dark' ? 'light' : 'dark'
     setThemeState(next)
     setTheme(next)
+  }
+
+  async function onSignOut() {
+    setAvatarOpen(false)
+    await handleSignOut()
+    navigate('/login')
   }
 
   return (
@@ -80,51 +110,42 @@ export default function Header({ onCmdK, onHamburger }: HeaderProps) {
         <div style={{ position: 'relative', width: 8, height: 8 }}>
           <div style={{
             position: 'absolute', inset: 0, borderRadius: '50%',
-            background: $.green, boxShadow: `0 0 8px ${$.green}`,
+            background: activeSession ? $.green : $.t4,
+            boxShadow: activeSession ? `0 0 8px ${$.green}` : 'none',
           }} />
-          <motion.div
-            style={{ position: 'absolute', inset: -3, borderRadius: '50%', border: `1.5px solid ${$.green}` }}
-            animate={{ scale: [1, 2.2], opacity: [0.7, 0] }}
-            transition={{ duration: 1.5, repeat: Infinity, ease: 'easeOut' }}
-          />
+          {activeSession && (
+            <motion.div
+              style={{ position: 'absolute', inset: -3, borderRadius: '50%', border: `1.5px solid ${$.green}` }}
+              animate={{ scale: [1, 2.2], opacity: [0.7, 0] }}
+              transition={{ duration: 1.5, repeat: Infinity, ease: 'easeOut' }}
+            />
+          )}
         </div>
 
         <span style={{ fontSize: isMobile ? 13 : 14, color: $.t1, fontWeight: 600 }}>
           {pageLabel}
         </span>
 
-        {!isMobile && (
+        {!isMobile && activeSession && (
           <>
             <div style={{ width: 1, height: 14, background: $.b1 }} />
-            <span style={{ fontSize: 12, color: $.t2 }}>Q1 Board Review</span>
-            <span style={{ fontSize: 10, color: $.t4, fontFamily: 'JetBrains Mono, monospace' }}>a3f8c1d0</span>
+            <span style={{ fontSize: 12, color: $.t2 }}>{activeSession.title}</span>
+            <span style={{ fontSize: 10, color: $.t4, fontFamily: 'JetBrains Mono, monospace' }}>{activeSession.sessionId.slice(0, 8)}</span>
           </>
         )}
       </div>
 
       {/* Right side */}
       <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 8 : 14 }}>
-        {!isMobile && (
-          <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <Wifi size={11} color={$.t3} />
-              <span style={{ fontSize: 10, color: $.t3, ...MONO_STYLE }}>5/5 · 23ms</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 5, color: $.green }}>
-              <Video size={11} />
-              <span style={{ fontSize: 10, ...MONO_STYLE }}>A+V+C</span>
-            </div>
-            <div style={{ width: 1, height: 14, background: $.b1 }} />
-          </>
+        {/* Session timer — only show when session is active */}
+        {activeSession && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <Clock size={11} color={$.t3} />
+            <span style={{ fontSize: 11, ...MONO_STYLE, color: $.t1 }}>{mm}:{ss}</span>
+          </div>
         )}
 
-        {/* Session timer */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-          <Clock size={11} color={$.t3} />
-          <span style={{ fontSize: 11, ...MONO_STYLE, color: $.t1 }}>{mm}:{ss}</span>
-        </div>
-
-        <div style={{ width: 1, height: 14, background: $.b1 }} />
+        {activeSession && <div style={{ width: 1, height: 14, background: $.b1 }} />}
 
         {/* Theme toggle */}
         <button
@@ -168,39 +189,50 @@ export default function Header({ onCmdK, onHamburger }: HeaderProps) {
 
         {/* Avatar + dropdown */}
         <div style={{ position: 'relative' }}>
-          <div
-            onClick={() => setAvatarOpen((v) => !v)}
-            style={{
-              width: 28, height: 28, borderRadius: 7,
-              background: `linear-gradient(135deg, ${$.cyan}, ${$.blue})`,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 10, fontWeight: 700, color: '#fff', cursor: 'pointer',
-            }}
-          >
-            AS
-          </div>
+          {profile?.avatar_url ? (
+            <img
+              src={profile.avatar_url}
+              alt={displayName}
+              onClick={() => setAvatarOpen((v) => !v)}
+              style={{
+                width: 28, height: 28, borderRadius: 7,
+                objectFit: 'cover', cursor: 'pointer',
+                border: `1px solid ${$.b2}`,
+              }}
+            />
+          ) : (
+            <div
+              onClick={() => setAvatarOpen((v) => !v)}
+              style={{
+                width: 28, height: 28, borderRadius: 7,
+                background: `linear-gradient(135deg, ${$.cyan}, ${$.blue})`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 10, fontWeight: 700, color: '#fff', cursor: 'pointer',
+              }}
+            >
+              {avatarInitials}
+            </div>
+          )}
 
           <AnimatePresence>
             {avatarOpen && (
               <>
-                {isMobile && (
-                  <div onClick={() => setAvatarOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 199 }} />
-                )}
+                <div onClick={() => setAvatarOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 199 }} />
                 <motion.div
                   initial={{ opacity: 0, scale: 0.95, y: -4 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.95, y: -4 }}
                   transition={{ duration: 0.15 }}
                   style={{
-                    position: 'absolute', top: 36, right: 0, width: 180,
+                    position: 'absolute', top: 36, right: 0, width: 200,
                     zIndex: 9999, background: $.bg2,
                     border: `1px solid ${$.b2}`, borderRadius: 10,
                     boxShadow: '0 12px 40px rgba(0,0,0,0.5)', overflow: 'hidden',
                   }}
                 >
                   <div style={{ padding: '10px 14px', borderBottom: `1px solid ${$.b1}` }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: $.t1 }}>Ahmed Sarhan</div>
-                    <div style={{ fontSize: 11, color: $.t3 }}>ahmed@realsync.ai</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: $.t1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</div>
+                    <div style={{ fontSize: 11, color: $.t3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayEmail}</div>
                   </div>
                   <button
                     onClick={() => { navigate('/settings'); setAvatarOpen(false) }}
@@ -208,7 +240,7 @@ export default function Header({ onCmdK, onHamburger }: HeaderProps) {
                       width: '100%', display: 'flex', alignItems: 'center', gap: 8,
                       padding: '10px 14px', background: 'transparent', border: 'none',
                       color: $.t2, cursor: 'pointer', fontSize: 13, textAlign: 'left',
-                      transition: 'background 100ms',
+                      transition: 'background 100ms', fontFamily: 'Inter, sans-serif',
                     }}
                     onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}
                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
@@ -216,12 +248,12 @@ export default function Header({ onCmdK, onHamburger }: HeaderProps) {
                     <Settings size={14} /> Profile Settings
                   </button>
                   <button
-                    onClick={() => { navigate('/login'); setAvatarOpen(false) }}
+                    onClick={onSignOut}
                     style={{
                       width: '100%', display: 'flex', alignItems: 'center', gap: 8,
                       padding: '10px 14px', background: 'transparent', border: 'none',
                       color: $.red, cursor: 'pointer', fontSize: 13, textAlign: 'left',
-                      transition: 'background 100ms',
+                      transition: 'background 100ms', fontFamily: 'Inter, sans-serif',
                     }}
                     onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(239,68,68,0.06)'}
                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}

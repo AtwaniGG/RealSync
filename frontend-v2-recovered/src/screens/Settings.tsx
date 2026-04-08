@@ -1,9 +1,11 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { User, Shield, Bell, Lock, Eye, EyeOff, Check, Monitor } from 'lucide-react'
 import Toggle from '../components/ui/Toggle'
 import $ from '../lib/tokens'
 import { EASE, LABEL_STYLE } from '../lib/tokens'
+import { useSessionContext } from '../contexts/SessionContext'
+import { supabase } from '../lib/supabaseClient'
 
 // ─── Shared sub-components ────────────────────────────────────────────────────
 
@@ -62,7 +64,7 @@ function ToggleRow({ label, description, on, onChange, delay }: {
   )
 }
 
-function TextInput({ label, value, onChange, disabled, type = 'text', placeholder }: {
+function TextInput({ label, value, onChange, disabled, type = 'text', placeholder = '' }: {
   label: string; value: string; onChange?: (v: string) => void; disabled?: boolean; type?: string; placeholder?: string
 }) {
   const [focused, setFocused] = useState(false)
@@ -124,11 +126,72 @@ function PasswordInput({ label, value, onChange, placeholder }: {
 // ─── Tab: General ─────────────────────────────────────────────────────────────
 
 function GeneralTab() {
-  const [name, setName] = useState('Ahmed Sarhan')
-  const [title, setTitle] = useState('Lead Engineer')
-  const [saved, setSaved] = useState(false)
+  const { profile, supabaseSession, setProfile } = useSessionContext()
+  const PROTOTYPE_MODE = import.meta.env.VITE_PROTOTYPE_MODE === '1'
 
-  function save() {
+  const profileWithTitle = profile as (typeof profile & { job_title?: string | null }) | null
+  const [name, setName] = useState(
+    PROTOTYPE_MODE ? 'Demo User' : (profile?.full_name ?? profile?.username ?? '')
+  )
+  const [title, setTitle] = useState(
+    PROTOTYPE_MODE ? 'Demo Account' : (profileWithTitle?.job_title ?? '')
+  )
+  const email = PROTOTYPE_MODE ? 'demo@realsync.ai' : (supabaseSession?.user?.email ?? '')
+  const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  // Sync if profile loads after mount
+  useEffect(() => {
+    if (profile && !PROTOTYPE_MODE) {
+      setName(profile.full_name ?? profile.username ?? '')
+      setTitle((profile as typeof profile & { job_title?: string | null })?.job_title ?? '')
+    }
+  }, [profile, PROTOTYPE_MODE])
+
+  const avatarInitials = name
+    .split(' ')
+    .map((n) => n.charAt(0))
+    .slice(0, 2)
+    .join('')
+    .toUpperCase() || 'RS'
+
+  async function save() {
+    if (PROTOTYPE_MODE) {
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2200)
+      return
+    }
+
+    const userId = supabaseSession?.user?.id
+    if (!userId) { setSaveError('Not authenticated.'); return }
+    if (!name.trim()) { setSaveError('Name cannot be empty.'); return }
+
+    setSaving(true)
+    setSaveError('')
+
+    const updates: Record<string, unknown> = {
+      id: userId,
+      full_name: name.trim(),
+      username: name.trim(),
+      job_title: title.trim() || null,
+      updated_at: new Date().toISOString(),
+    }
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .upsert(updates, { onConflict: 'id' })
+      .select('id, username, full_name, avatar_url, job_title, created_at, updated_at')
+      .single()
+
+    setSaving(false)
+
+    if (error) {
+      setSaveError(error.message)
+      return
+    }
+
+    if (data) setProfile(data)
     setSaved(true)
     setTimeout(() => setSaved(false), 2200)
   }
@@ -138,41 +201,48 @@ function GeneralTab() {
       <SettingsCard delay={0.05}>
         <SectionHeader title="Profile" subtitle="Your public-facing account information" />
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '12px 14px', background: $.bg2, borderRadius: 12, border: `1px solid ${$.b1}`, marginBottom: 20 }}>
-          <div style={{
-            width: 64, height: 64, borderRadius: '50%',
-            background: `linear-gradient(135deg, ${$.cyan}, ${$.violet})`,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 20, fontWeight: 700, color: '#fff', flexShrink: 0,
-            boxShadow: '0 0 24px rgba(34,211,238,0.22), 0 0 48px rgba(139,92,246,0.12)',
-            letterSpacing: '-0.02em',
-          }}>
-            AS
-          </div>
+          {profile?.avatar_url ? (
+            <img src={profile.avatar_url} alt={name} style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover', flexShrink: 0, border: `1px solid ${$.b2}` }} />
+          ) : (
+            <div style={{
+              width: 64, height: 64, borderRadius: '50%',
+              background: `linear-gradient(135deg, ${$.cyan}, ${$.violet})`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 20, fontWeight: 700, color: '#fff', flexShrink: 0,
+              boxShadow: '0 0 24px rgba(34,211,238,0.22), 0 0 48px rgba(139,92,246,0.12)',
+              letterSpacing: '-0.02em',
+            }}>
+              {avatarInitials}
+            </div>
+          )}
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 14, color: $.t1, fontWeight: 600 }}>Ahmed Sarhan</div>
-            <div style={{ fontSize: 11, color: $.t3, marginTop: 3 }}>Lead Engineer · RealSync AI</div>
-            <button style={{ marginTop: 8, fontSize: 11, color: $.cyan, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'Inter, sans-serif' }}>
-              Change avatar
-            </button>
+            <div style={{ fontSize: 14, color: $.t1, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name || 'Your Name'}</div>
+            {title && <div style={{ fontSize: 11, color: $.t3, marginTop: 3 }}>{title}</div>}
+            <div style={{ fontSize: 11, color: $.t4, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email}</div>
           </div>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <TextInput label="Full Name" value={name} onChange={setName} />
-          <TextInput label="Email Address" value="ahmed@realsync.ai" disabled />
-          <TextInput label="Job Title" value={title} onChange={setTitle} />
+          <TextInput label="Email Address" value={email} disabled />
+          <TextInput label="Job Title" value={title} onChange={setTitle} placeholder="e.g. Security Analyst" />
         </div>
+
+        {saveError && (
+          <p style={{ fontSize: 12, color: $.red, margin: '10px 0 0' }}>{saveError}</p>
+        )}
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
           <motion.button
-            onClick={save} whileTap={{ scale: 0.97 }}
+            onClick={save} whileTap={{ scale: 0.97 }} disabled={saving}
             style={{
               display: 'flex', alignItems: 'center', gap: 7, padding: '9px 20px',
               background: saved ? 'rgba(16,185,129,0.12)' : 'rgba(34,211,238,0.1)',
               border: `1px solid ${saved ? $.green : $.cyan}`,
               borderRadius: 10, color: saved ? $.green : $.cyan, fontSize: 13,
-              fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif',
+              fontWeight: 600, cursor: saving ? 'wait' : 'pointer', fontFamily: 'Inter, sans-serif',
               transition: 'all 200ms cubic-bezier(0.4,0,0.2,1)',
+              opacity: saving ? 0.7 : 1,
             }}
           >
             <AnimatePresence mode="wait">
@@ -181,7 +251,7 @@ function GeneralTab() {
                     <Check size={14} />Saved
                   </motion.span>
                 : <motion.span key="save" initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }}>
-                    Save Changes
+                    {saving ? 'Saving...' : 'Save Changes'}
                   </motion.span>
               }
             </AnimatePresence>
@@ -364,18 +434,37 @@ function NotificationsTab() {
 // ─── Tab: Security ────────────────────────────────────────────────────────────
 
 function SecurityTab() {
+  const PROTOTYPE_MODE = import.meta.env.VITE_PROTOTYPE_MODE === '1'
   const [twoFa, setTwoFa] = useState(false)
   const [current, setCurrent] = useState('')
   const [newPw, setNewPw] = useState('')
   const [confirm, setConfirm] = useState('')
   const [updated, setUpdated] = useState(false)
+  const [updating, setUpdating] = useState(false)
   const [error, setError] = useState('')
 
-  function updatePassword() {
-    if (!current || !newPw || !confirm) { setError('All fields are required.'); return }
+  async function updatePassword() {
+    if (!newPw || !confirm) { setError('All fields are required.'); return }
     if (newPw !== confirm) { setError('New passwords do not match.'); return }
     if (newPw.length < 8) { setError('Password must be at least 8 characters.'); return }
     setError('')
+
+    if (PROTOTYPE_MODE) {
+      setUpdated(true)
+      setCurrent(''); setNewPw(''); setConfirm('')
+      setTimeout(() => setUpdated(false), 2200)
+      return
+    }
+
+    setUpdating(true)
+    const { error: updateError } = await supabase.auth.updateUser({ password: newPw })
+    setUpdating(false)
+
+    if (updateError) {
+      setError(updateError.message)
+      return
+    }
+
     setUpdated(true)
     setCurrent(''); setNewPw(''); setConfirm('')
     setTimeout(() => setUpdated(false), 2200)
@@ -431,14 +520,14 @@ function SecurityTab() {
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 2 }}>
             <motion.button
-              onClick={updatePassword} whileTap={{ scale: 0.97 }}
+              onClick={updatePassword} whileTap={{ scale: 0.97 }} disabled={updating}
               style={{
                 display: 'flex', alignItems: 'center', gap: 7, padding: '9px 20px',
                 background: updated ? 'rgba(16,185,129,0.12)' : $.bg2,
                 border: `1px solid ${updated ? $.green : $.b2}`,
                 borderRadius: 10, color: updated ? $.green : $.t2, fontSize: 13,
-                fontWeight: 500, cursor: 'pointer', fontFamily: 'Inter, sans-serif',
-                transition: 'all 200ms cubic-bezier(0.4,0,0.2,1)',
+                fontWeight: 500, cursor: updating ? 'wait' : 'pointer', fontFamily: 'Inter, sans-serif',
+                transition: 'all 200ms cubic-bezier(0.4,0,0.2,1)', opacity: updating ? 0.7 : 1,
               }}
             >
               <AnimatePresence mode="wait">
@@ -447,7 +536,7 @@ function SecurityTab() {
                       <Check size={14} />Password Updated
                     </motion.span>
                   : <motion.span key="update" initial={{ opacity: 0, scale: 0.85 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }}>
-                      Update Password
+                      {updating ? 'Updating...' : 'Update Password'}
                     </motion.span>
                 }
               </AnimatePresence>
@@ -502,11 +591,14 @@ const TABS = [
 
 type TabId = typeof TABS[number]['id']
 
-const TAB_CONTENT: Record<TabId, React.ReactNode> = {
-  general: <GeneralTab />,
-  detection: <DetectionTab />,
-  notifications: <NotificationsTab />,
-  security: <SecurityTab />,
+function TabContent({ tab }: { tab: TabId }) {
+  switch (tab) {
+    case 'general': return <GeneralTab />
+    case 'detection': return <DetectionTab />
+    case 'notifications': return <NotificationsTab />
+    case 'security': return <SecurityTab />
+    default: return null
+  }
 }
 
 export default function Settings() {
@@ -553,7 +645,7 @@ export default function Settings() {
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.22, ease: EASE }}
           >
-            {TAB_CONTENT[tab]}
+            <TabContent tab={tab} />
           </motion.div>
         </AnimatePresence>
       </div>
@@ -619,7 +711,7 @@ export default function Settings() {
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.22, ease: EASE }}
           >
-            {TAB_CONTENT[tab]}
+            <TabContent tab={tab} />
           </motion.div>
         </AnimatePresence>
       </div>

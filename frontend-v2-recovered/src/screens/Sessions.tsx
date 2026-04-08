@@ -6,9 +6,10 @@ import {
 } from 'lucide-react'
 import $ from '../lib/tokens'
 import { EASE, LABEL_STYLE, MONO_STYLE } from '../lib/tokens'
-import type { SessionType } from '../lib/mockData'
 import { authFetch } from '../lib/api'
 import { useSessionContext } from '../contexts/SessionContext'
+
+type SessionType = 'official' | 'business' | 'friends'
 
 type SessionStatus = 'connected' | 'joining' | 'completed' | 'waiting'
 

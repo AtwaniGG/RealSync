@@ -5,6 +5,7 @@ import { Mail, Lock, Eye, EyeOff, ArrowRight, Shield, Mic, Brain } from 'lucide-
 import $ from '../lib/tokens'
 import { EASE } from '../lib/tokens'
 import { supabase } from '../lib/supabaseClient'
+import { isBlockedDomain } from '../lib/blockedDomains'
 
 const PROTOTYPE_MODE = import.meta.env.VITE_PROTOTYPE_MODE === '1'
 
@@ -54,6 +55,14 @@ export default function Login() {
         } else {
           setError(authError.message)
         }
+        return
+      }
+
+      // Check for blocked personal domains
+      const { data: sessionData } = await supabase.auth.getSession()
+      if (sessionData.session?.user?.email && isBlockedDomain(sessionData.session.user.email)) {
+        await supabase.auth.signOut()
+        setError('Personal email providers (Gmail, Yahoo, Outlook, etc.) are not accepted. Please use a corporate email.')
         return
       }
 
@@ -255,8 +264,11 @@ export default function Login() {
 
       <p style={{ textAlign: 'center', marginTop: 20, fontSize: 13, color: $.t3 }}>
         Don't have an account?{' '}
-        <button style={{ background: 'none', border: 'none', color: $.cyan, cursor: 'pointer', fontWeight: 500, fontSize: 13, padding: 0 }}>
-          Request access
+        <button
+          onClick={() => navigate('/signup')}
+          style={{ background: 'none', border: 'none', color: $.cyan, cursor: 'pointer', fontWeight: 500, fontSize: 13, padding: 0 }}
+        >
+          Sign up
         </button>
       </p>
 

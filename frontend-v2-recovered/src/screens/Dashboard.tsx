@@ -8,7 +8,6 @@ import BentoCard from '../components/ui/BentoCard'
 import TrustGauge from '../components/ui/TrustGauge'
 import $ from '../lib/tokens'
 import { EASE, LABEL_STYLE, MONO_STYLE } from '../lib/tokens'
-import { TIMELINE_DATA } from '../lib/mockData'
 import type { AlertSeverity } from '../lib/mockData'
 import { useWsMessages, useWebSocket } from '../contexts/WebSocketContext'
 import { useSessionContext } from '../contexts/SessionContext'
@@ -198,7 +197,7 @@ export default function Dashboard() {
   const [metrics, setMetrics] = useState<LiveMetrics>(DEFAULT_METRICS)
   const [alerts, setAlerts] = useState<LiveAlert[]>([])
   const [participants, setParticipants] = useState<Participant[]>([])
-  const [timeline, setTimeline] = useState<TrustPoint[]>(TIMELINE_DATA)
+  const [timeline, setTimeline] = useState<TrustPoint[]>([])
   const [dataSource, setDataSource] = useState<'simulated' | 'live'>('simulated')
 
   // Subscribe to WebSocket messages
