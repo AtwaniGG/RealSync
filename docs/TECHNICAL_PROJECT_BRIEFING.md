@@ -1,6 +1,6 @@
 # RealSync — Complete Technical Project Briefing
 
-> This document is designed to give another AI assistant (or developer) full understanding of the RealSync system. It covers architecture, data flow, every component, API contracts, known issues, and how to run it locally.
+> This document is designed to give a developer full understanding of the RealSync system. It covers architecture, data flow, every component, API contracts, known issues, and how to run it locally.
 
 ---
 

@@ -1,0 +1,375 @@
+import React, { useState } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import {
+  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
+} from 'recharts'
+import {
+  FileText, Calendar, Clock, Users, AlertTriangle, AlertCircle,
+  Info, Download, File, Database,
+} from 'lucide-react'
+import $ from '../lib/tokens'
+import { EASE, LABEL_STYLE, MONO_STYLE, trustColor, SEVERITY_CONFIG } from '../lib/tokens'
+import { REPORTS } from '../lib/mockData'
+import type { Report, AlertSeverity } from '../lib/mockData'
+
+// Export helpers
+function downloadJson(report: Report) {
+  const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a'); a.href = url; a.download = `${report.id}.json`; a.click()
+  URL.revokeObjectURL(url)
+}
+
+function downloadCsv(report: Report) {
+  const rows = [
+    ['Time', 'Severity', 'Category', 'Message'],
+    ...report.timeline.map((t) => [t.time, t.sev, t.cat, t.msg]),
+  ]
+  const csv = rows.map((r) => r.join(',')).join('\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a'); a.href = url; a.download = `${report.id}.csv`; a.click()
+  URL.revokeObjectURL(url)
+}
+
+function downloadPdf(report: Report) {
+  // Simple text export (no jsPDF dependency)
+  const txt = `RealSync Session Report\n${report.title}\nDate: ${report.date}\nTrust Avg: ${report.trustAvg}%\nAlerts: ${report.alerts.total}\n\nTimeline:\n${report.timeline.map((t) => `[${t.time}] ${t.sev.toUpperCase()} — ${t.cat}: ${t.msg}`).join('\n')}`
+  const blob = new Blob([txt], { type: 'text/plain' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a'); a.href = url; a.download = `${report.id}.txt`; a.click()
+  URL.revokeObjectURL(url)
+}
+
+const SEVERITY_ICONS: Record<AlertSeverity, typeof AlertCircle> = {
+  critical: AlertCircle,
+  high: AlertTriangle,
+  medium: AlertTriangle,
+  low: Info,
+}
+
+// Export button
+function ExportBtn({ icon: Icon, label, onClick }: { icon: typeof Download; label: string; onClick: () => void }) {
+  const [hov, setHov] = useState(false)
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px',
+        borderRadius: 8, border: `1px solid ${hov ? $.b2 : $.b1}`,
+        background: hov ? 'rgba(255,255,255,0.04)' : 'transparent',
+        color: hov ? $.t1 : $.t3, cursor: 'pointer', fontSize: 11,
+        fontFamily: 'Inter, sans-serif', transition: 'all 150ms',
+      }}
+    >
+      <Icon size={12} /> {label}
+    </button>
+  )
+}
+
+// Report list item (desktop sidebar)
+function ReportItem({ report, selected, delay, onClick }: { report: Report; selected: boolean; delay: number; onClick: () => void }) {
+  const [hov, setHov] = useState(false)
+  const color = trustColor(report.trustAvg)
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -10 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.35, delay, ease: EASE }}
+      onClick={onClick}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        padding: '12px 14px', borderRadius: 12, cursor: 'pointer',
+        background: selected ? `${$.cyan}08` : hov ? 'rgba(255,255,255,0.02)' : 'transparent',
+        border: `1px solid ${selected ? `${$.cyan}20` : hov ? $.b2 : $.b1}`,
+        transition: 'all 200ms cubic-bezier(0.4,0,0.2,1)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <span style={{ fontSize: 12, color: $.t1, fontWeight: 500 }}>{report.title}</span>
+        <span style={{ fontSize: 12, ...MONO_STYLE, color, fontWeight: 600 }}>{report.trustAvg}%</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 10, color: $.t3 }}>{report.date}</span>
+        <span style={{ width: 2, height: 2, borderRadius: '50%', background: $.t4 }} />
+        <span style={{ fontSize: 10, ...MONO_STYLE, color: $.t4 }}>{report.duration}</span>
+      </div>
+    </motion.div>
+  )
+}
+
+// Chart tooltip
+function ChartTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null
+  return (
+    <div style={{ background: $.bg2, border: `1px solid ${$.b2}`, borderRadius: 8, padding: '8px 12px', boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
+      <div style={{ fontSize: 10, color: $.t3, marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 14, ...MONO_STYLE, color: $.cyan, fontWeight: 600 }}>{payload[0].value}%</div>
+    </div>
+  )
+}
+
+// Full report detail panel
+function ReportDetail({ report }: { report: Report }) {
+  const isMobile = window.innerWidth <= 768
+  const trustCol = trustColor(report.trustAvg)
+  const yMin = Math.max(60, Math.min(...report.trustCurve.map((p) => p.score)) - 5)
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 10 : 14, height: '100%' }}>
+      {/* Header card */}
+      <motion.div
+        initial={{ opacity: 0, y: -8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.35, ease: EASE }}
+        style={{
+          background: $.bg1, border: `1px solid ${$.b1}`, borderRadius: 14,
+          padding: isMobile ? '14px 14px' : '16px 20px',
+          position: 'relative', overflow: 'hidden', flexShrink: 0,
+        }}
+      >
+        <div style={{ position: 'absolute', top: -50, right: -50, width: 220, height: 220, borderRadius: '50%', background: 'radial-gradient(circle, rgba(34,211,238,0.07) 0%, transparent 70%)', pointerEvents: 'none' }} />
+
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: isMobile ? 'wrap' : 'nowrap', gap: 10 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6 }}>
+              <FileText size={13} color={$.cyan} />
+              <span style={{ fontSize: 9, color: $.cyan, textTransform: 'uppercase', letterSpacing: '0.15em', fontWeight: 600 }}>Session Report</span>
+            </div>
+            <h2 style={{ fontSize: isMobile ? 15 : 18, fontWeight: 600, color: $.t1, margin: 0, marginBottom: 8, letterSpacing: '-0.01em' }}>{report.title}</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 12, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <Calendar size={11} color={$.t4} />
+                <span style={{ fontSize: 11, color: $.t3 }}>{report.date}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <Clock size={11} color={$.t4} />
+                <span style={{ fontSize: 11, ...MONO_STYLE, color: $.t3 }}>{report.duration}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <Users size={11} color={$.t4} />
+                <span style={{ fontSize: 11, color: $.t3 }}>{report.participants} part.</span>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, flexShrink: 0 }}>
+            <div style={{ display: 'flex', gap: isMobile ? 4 : 6, marginTop: 4, flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
+              <ExportBtn icon={File} label="PDF" onClick={() => downloadPdf(report)} />
+              <ExportBtn icon={Database} label="CSV" onClick={() => downloadCsv(report)} />
+              <ExportBtn icon={Download} label="JSON" onClick={() => downloadJson(report)} />
+            </div>
+            <div style={{
+              textAlign: 'right',
+              background: `${trustCol}0f`, border: `1px solid ${trustCol}28`,
+              borderRadius: 10, padding: isMobile ? '8px 12px' : '10px 16px', flexShrink: 0,
+            }}>
+              <div style={{ fontSize: isMobile ? 24 : 30, ...MONO_STYLE, fontWeight: 300, color: trustCol, lineHeight: 1, marginBottom: 4 }}>{report.trustAvg}%</div>
+              <div style={{ fontSize: 9, color: trustCol, textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 600, opacity: 0.75 }}>Trust Avg</div>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* Stats row */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {[
+          { label: 'Total Alerts', val: String(report.alerts.total), icon: AlertTriangle, color: report.alerts.total > 0 ? $.red : $.green },
+          { label: 'Critical', val: String(report.alerts.critical), icon: AlertCircle, color: report.alerts.critical > 0 ? '#EF4444' : $.t4 },
+          { label: 'High', val: String(report.alerts.high), icon: AlertTriangle, color: report.alerts.high > 0 ? '#F97316' : $.t4 },
+          { label: 'Participants', val: String(report.participants), icon: Users, color: $.blue },
+        ].map((s, i) => (
+          <motion.div
+            key={s.label}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: i * 0.05, ease: EASE }}
+            style={{
+              flex: 1, background: $.bg1, border: `1px solid ${$.b1}`,
+              borderRadius: 10, padding: '10px 12px', position: 'relative', overflow: 'hidden',
+            }}
+          >
+            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg, ${s.color}, transparent)` }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 5 }}>
+              <s.icon size={11} color={s.color} />
+              <span style={{ fontSize: 9, color: $.t3, textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 500 }}>{s.label}</span>
+            </div>
+            <div style={{ fontSize: 18, ...MONO_STYLE, color: $.t1, fontWeight: 400, marginBottom: 2 }}>{s.val}</div>
+          </motion.div>
+        ))}
+      </div>
+
+      {/* Trust curve chart */}
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.15, ease: EASE }}
+        style={{ background: $.bg1, border: `1px solid ${$.b1}`, borderRadius: 14, padding: '16px 16px 8px' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <span style={LABEL_STYLE}>Trust Score Timeline</span>
+          <span style={{ fontSize: 10, color: $.t4, ...MONO_STYLE }}>{report.duration}</span>
+        </div>
+        <div style={{ height: 120 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={report.trustCurve} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+              <defs>
+                <linearGradient id={`report-fill-${report.id}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={trustCol} stopOpacity={0.2} />
+                  <stop offset="100%" stopColor={trustCol} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="rgba(255,255,255,0.03)" strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="t" tick={{ fontSize: 10, fill: $.t4 }} axisLine={false} tickLine={false} />
+              <YAxis domain={[yMin, 100]} tick={{ fontSize: 10, fill: $.t4 }} axisLine={false} tickLine={false} />
+              <Tooltip content={<ChartTooltip />} cursor={{ stroke: $.b2 }} />
+              <Area type="monotone" dataKey="score" stroke={trustCol} strokeWidth={2} fill={`url(#report-fill-${report.id})`} dot={false} activeDot={{ r: 4, fill: trustCol, stroke: $.bg0, strokeWidth: 2 }} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </motion.div>
+
+      {/* Alert timeline */}
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.25, ease: EASE }}
+        style={{ background: $.bg1, border: `1px solid ${$.b1}`, borderRadius: 14, padding: '16px 16px', flex: 1 }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <span style={LABEL_STYLE}>Alert Timeline</span>
+          <span style={{ fontSize: 10, color: $.t4, ...MONO_STYLE }}>{report.alerts.total}</span>
+        </div>
+
+        {report.timeline.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '24px 0', color: $.t4, fontSize: 13 }}>
+            No alerts detected — session was clean
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {report.timeline.map((alert, i) => {
+              const cfg = SEVERITY_CONFIG[alert.sev]
+              const Icon = SEVERITY_ICONS[alert.sev]
+              return (
+                <motion.div
+                  key={alert.id}
+                  initial={{ opacity: 0, x: 8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.3, delay: 0.5 + i * 0.07, ease: EASE }}
+                  style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 10,
+                    padding: '9px 12px', borderLeft: `2px solid ${cfg.color}`,
+                    background: cfg.bg, borderRadius: '0 8px 8px 0',
+                  }}
+                >
+                  <Icon size={13} color={cfg.color} style={{ marginTop: 1, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                      <span style={{ fontSize: 9, fontWeight: 700, color: cfg.color, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{alert.cat}</span>
+                      <span style={{ fontSize: 9, ...MONO_STYLE, color: $.t4 }}>{alert.time}</span>
+                      <span style={{ fontSize: 8, fontWeight: 600, padding: '1px 5px', borderRadius: 3, background: `${cfg.color}18`, color: cfg.color, border: `1px solid ${cfg.color}28` }}>{cfg.label.toUpperCase()}</span>
+                    </div>
+                    <p style={{ fontSize: 11, color: $.t2, lineHeight: 1.45, margin: 0 }}>{alert.msg}</p>
+                  </div>
+                </motion.div>
+              )
+            })}
+          </div>
+        )}
+      </motion.div>
+    </div>
+  )
+}
+
+export default function Reports() {
+  const isMobile = window.innerWidth <= 768
+  const [selectedId, setSelectedId] = useState('rpt-001')
+  const selected = REPORTS.find((r) => r.id === selectedId) ?? REPORTS[0]
+
+  if (isMobile) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {/* Horizontal scroll list */}
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <span style={LABEL_STYLE}>Completed Sessions</span>
+            <span style={{ fontSize: 10, ...MONO_STYLE, color: $.t4 }}>{REPORTS.length}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
+            {REPORTS.map((r, i) => {
+              const col = trustColor(r.trustAvg)
+              const selected = r.id === selectedId
+              return (
+                <motion.button
+                  key={r.id}
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.3, delay: i * 0.05, ease: EASE }}
+                  onClick={() => setSelectedId(r.id)}
+                  style={{
+                    flexShrink: 0, padding: '10px 12px', borderRadius: 10, cursor: 'pointer',
+                    background: selected ? `${$.cyan}08` : $.bg1,
+                    border: `1px solid ${selected ? `${$.cyan}20` : $.b1}`,
+                    textAlign: 'left', fontFamily: 'Inter, sans-serif',
+                    transition: 'all 200ms cubic-bezier(0.4,0,0.2,1)', minWidth: 160,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <span style={{ fontSize: 11, color: $.t1, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 110 }}>{r.title}</span>
+                    <span style={{ fontSize: 11, ...MONO_STYLE, color: col, fontWeight: 600 }}>{r.trustAvg}%</span>
+                  </div>
+                  <div style={{ fontSize: 10, color: $.t3 }}>{r.date}</div>
+                </motion.button>
+              )
+            })}
+          </div>
+        </div>
+        <ReportDetail report={selected} />
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '272px 1fr', gap: 14, height: '100%', minHeight: 0 }}>
+      {/* Left panel — report list */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', paddingRight: 2 }}>
+        <motion.div
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, ease: EASE }}
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, marginBottom: 2 }}
+        >
+          <span style={LABEL_STYLE}>Completed Sessions</span>
+          <span style={{ fontSize: 10, ...MONO_STYLE, color: $.t4 }}>{REPORTS.length}</span>
+        </motion.div>
+        {REPORTS.map((r, i) => (
+          <ReportItem
+            key={r.id} report={r}
+            selected={r.id === selectedId}
+            delay={0.05 + i * 0.06}
+            onClick={() => setSelectedId(r.id)}
+          />
+        ))}
+      </div>
+
+      {/* Right panel — detail */}
+      <div style={{ overflow: 'auto', minHeight: 0 }}>
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={selectedId}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.2, ease: EASE }}
+            style={{ height: '100%' }}
+          >
+            <ReportDetail report={selected} />
+          </motion.div>
+        </AnimatePresence>
+      </div>
+    </div>
+  )
+}

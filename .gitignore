@@ -41,6 +41,14 @@ realsync-backend/bot/screenshots/
 .claude/
 CLAUDE.md
 
+# Development artifacts
+AGENTS.md
+HANDOFF*.md
+handoff-aws/
+
+# Task tracking
+tasks/
+
 # Environment
 .env
 .env.*
@@ -49,3 +57,4 @@ CLAUDE.md
 *.log
 RealSync-AI-Prototype/src/models.zip
 RealSync-AI-Prototype/.venv 2
+.gitnexus
