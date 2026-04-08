@@ -9,6 +9,7 @@ Input: base64-encoded PCM16 mono 16kHz audio (4 seconds = 64000 samples).
 Output: {"authenticityScore": float, "riskLevel": str, "model": str}
 """
 import base64
+import math
 import os
 import threading
 
@@ -176,7 +177,6 @@ def predict_audio(audio_b64: str) -> dict:
         # Raw logits are saturated (20-70 range). Lower logit = more real.
         # Rescale: logit 15 → auth 1.0 (definitely real), logit 60 → auth 0.0 (definitely fake)
         # Using sigmoid with shifted center and compressed steepness
-        import math
         authenticity = 1.0 / (1.0 + math.exp(0.1 * (logit - 35.0)))
         authenticity = round(max(0.0, min(1.0, authenticity)), 4)
 

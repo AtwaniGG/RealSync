@@ -269,7 +269,6 @@ function DetectionTab() {
   const [visual, setVisual] = useState(true)
   const [audio, setAudio] = useState(true)
   const [emotion, setEmotion] = useState(true)
-  const [identity, setIdentity] = useState(true)
   const [sensitivity, setSensitivity] = useState<'low' | 'medium' | 'high'>(() => {
     const saved = localStorage.getItem('rs_detection_sensitivity')
     return (saved as 'low' | 'medium' | 'high') ?? 'high'
@@ -335,7 +334,13 @@ function DetectionTab() {
           <ToggleRow label="Visual Deepfake Detection" description="Analyzes video stream for facial manipulation and neural synthesis artifacts" on={visual} onChange={setVisual} delay={0.1} />
           <ToggleRow label="Audio Manipulation Detection" description="Identifies voice cloning, audio splicing, and codec-level deepfake signals" on={audio} onChange={setAudio} delay={0.15} />
           <ToggleRow label="Emotion Analysis" description="Tracks micro-expression inconsistencies and behavioral pattern anomalies" on={emotion} onChange={setEmotion} delay={0.2} />
-          <ToggleRow label="Identity Verification" description="Continuous biometric cross-referencing against registered participant profiles" on={identity} onChange={setIdentity} delay={0.25} />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '12px 0', borderBottom: `1px solid ${$.b1}` }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13, color: $.t3, fontWeight: 500 }}>Identity Verification</div>
+              <div style={{ fontSize: 11, color: $.t4, marginTop: 2, lineHeight: 1.5 }}>Continuous biometric cross-referencing against registered participant profiles</div>
+            </div>
+            <span style={{ fontSize: 10, color: $.amber, fontWeight: 600, padding: '3px 8px', borderRadius: 6, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.18)', letterSpacing: '0.06em', textTransform: 'uppercase', flexShrink: 0 }}>Coming Soon</span>
+          </div>
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
           <motion.button
@@ -439,8 +444,12 @@ function NotificationsTab() {
     return saved !== null ? saved === 'true' : false
   })
   const [levels, setLevels] = useState<Record<string, boolean>>(() => {
-    const saved = localStorage.getItem('rs_notif_levels')
-    return saved ? JSON.parse(saved) : { critical: true, high: true, medium: false, low: false }
+    try {
+      const saved = localStorage.getItem('rs_notif_levels')
+      return saved ? JSON.parse(saved) : { critical: true, high: true, medium: false, low: false }
+    } catch {
+      return { critical: true, high: true, medium: false, low: false }
+    }
   })
 
   useEffect(() => {
@@ -516,7 +525,6 @@ function NotificationsTab() {
 
 function SecurityTab() {
   const PROTOTYPE_MODE = import.meta.env.VITE_PROTOTYPE_MODE === '1'
-  const [twoFa, setTwoFa] = useState(false)
   const [current, setCurrent] = useState('')
   const [newPw, setNewPw] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -570,7 +578,6 @@ function SecurityTab() {
       <SettingsCard delay={0.12}>
         <SectionHeader title="Change Password" subtitle="Use a strong, unique password you don't reuse on other services" />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <PasswordInput label="Current Password" value={current} onChange={setCurrent} placeholder="Enter current password" />
           <PasswordInput label="New Password" value={newPw} onChange={setNewPw} placeholder="Minimum 8 characters" />
           <PasswordInput label="Confirm New Password" value={confirm} onChange={setConfirm} placeholder="Repeat new password" />
 
