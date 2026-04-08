@@ -238,19 +238,8 @@ const S = StyleSheet.create({
     gap: 12,
   },
   headerLogo: {
-    width: 36,
-    height: 36,
-  },
-  headerLogoText: {
-    color: COLOR.textWhite,
-    fontSize: 14,
-    fontFamily: 'Helvetica-Bold',
-    letterSpacing: 0.5,
-  },
-  headerSubtext: {
-    color: COLOR.textWhiteMuted,
-    fontSize: 7,
-    marginTop: 2,
+    width: 100,
+    height: 35,
   },
   headerBadge: {
     borderWidth: 1,
@@ -348,7 +337,7 @@ const S = StyleSheet.create({
     marginBottom: 16,
   },
   trustBox: {
-    width: 110,
+    width: 130,
     borderRadius: 6,
     borderWidth: 1.5,
     padding: 12,
@@ -360,6 +349,7 @@ const S = StyleSheet.create({
     fontFamily: 'Helvetica-Bold',
     letterSpacing: -1,
     lineHeight: 1,
+    // Prevent hyphenation — score like "100%" must stay on one line
   },
   trustScoreLabel: {
     fontSize: 7,
@@ -700,13 +690,10 @@ function PageHeader({
     <>
       <View style={S.headerBanner}>
         <View style={S.headerLeft}>
+          {/* Hi-res 1600x560 wordmark — includes "RealSync" text, no separate label needed */}
           {logoWhite && (
             <Image src={logoWhite} style={S.headerLogo} />
           )}
-          <View>
-            <Text style={S.headerLogoText}>RealSync</Text>
-            <Text style={S.headerSubtext}>AI-Powered Meeting Authenticity Platform</Text>
-          </View>
         </View>
         <View style={S.headerBadge}>
           <Text style={S.headerBadgeText}>SECURITY AUDIT REPORT</Text>
@@ -1317,8 +1304,10 @@ function SecurityReport({
  * Both can be called independently from Reports.tsx.
  */
 export async function generateReportReactPdf(data: ReportInput): Promise<void> {
-  // Fetch logos from public folder at runtime
-  const logoWhite = await fetchLogoAsDataUrl('/realsync-logo-white.png')
+  // Fetch hi-res 1600x560 wordmark logo; fall back to 1024px square variant if unavailable
+  const logoWhite =
+    (await fetchLogoAsDataUrl('/realsync-logo-hires.png')) ??
+    (await fetchLogoAsDataUrl('/realsync-logo-1024.png'))
 
   const blob = await pdf(
     <SecurityReport data={data} logoWhite={logoWhite} />
