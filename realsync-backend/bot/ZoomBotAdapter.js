@@ -1609,8 +1609,8 @@ class ZoomBotAdapter {
           console.log("[RealSync AudioCapture] Tapped createMediaStreamSource");
 
           try {
-            // Create a source in our capture context from the same stream
-            const captureSource = captureCtx.createMediaStreamSource(stream);
+            // Use the ORIGINAL function to avoid infinite recursion
+            const captureSource = origCreateMediaStreamSource.call(captureCtx, stream);
             captureSource.connect(merger);
           } catch (err) {
             console.warn("[RealSync AudioCapture] Could not tap stream:", err.message);
