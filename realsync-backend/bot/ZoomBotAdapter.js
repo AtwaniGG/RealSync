@@ -1099,6 +1099,32 @@ class ZoomBotAdapter {
   }
 
   /**
+   * Force-reveal the Zoom toolbar by removing the hidden CSS class.
+   * The Zoom web client hides the toolbar using the footer__hidden class
+   * which isn't removed by mouse hover in headless mode.
+   */
+  async _revealToolbar() {
+    try {
+      await this.page.evaluate(() => {
+        // Remove hidden class from all footer elements
+        document.querySelectorAll('[class*="footer"]').forEach((el) => {
+          el.classList.remove('footer__hidden');
+          el.style.opacity = '1';
+          el.style.visibility = 'visible';
+          el.style.pointerEvents = 'auto';
+          el.style.transform = 'translateY(0)';
+        });
+      });
+      // Also move mouse to trigger any hover listeners
+      await this.page.mouse.move(960, 1050);
+      await sleep(500);
+      log.info("zoomBot", "Toolbar revealed via DOM class removal.");
+    } catch (err) {
+      log.warn("zoomBot", `Toolbar reveal failed (non-fatal): ${err.message}`);
+    }
+  }
+
+  /**
    * Switch Zoom's layout to Speaker View so the active speaker fills the main frame.
    * Gallery View (small tiles) reduces AI detection accuracy — Speaker View is required
    * for reliable deepfake analysis.
@@ -1107,16 +1133,7 @@ class ZoomBotAdapter {
    */
   async _switchToSpeakerView() {
     try {
-      // Reveal the Zoom toolbar by hovering near the bottom of the viewport
-      await this.page.mouse.move(960, 1070);
-      await sleep(1000);
-      // Move mouse again to ensure toolbar stays visible
-      await this.page.mouse.move(960, 1060);
-      await sleep(500);
-      log.info("zoomBot", "Toolbar revealed via mouse hover.");
-
-      // Wait for toolbar to render
-      await sleep(1000);
+      await this._revealToolbar();
 
       // Click the "View" button in Zoom's toolbar
       const viewButton = await this.page.$(
@@ -1143,7 +1160,12 @@ class ZoomBotAdapter {
           return;
         }
       } else {
-        await viewButton.click();
+        try {
+          await viewButton.click();
+        } catch {
+          // Puppeteer click failed — use JS click instead
+          await viewButton.evaluate((btn) => btn.click());
+        }
       }
 
       // Wait for dropdown to open
@@ -1192,14 +1214,7 @@ class ZoomBotAdapter {
    */
   async _autoMute() {
     try {
-      // Reveal the Zoom toolbar by hovering near the bottom of the viewport
-      await this.page.mouse.move(960, 1070);
-      await sleep(1000);
-      await this.page.mouse.move(960, 1060);
-      await sleep(500);
-
-      // Wait for toolbar to render
-      await sleep(1000);
+      await this._revealToolbar();
 
       let muted = false;
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -1215,7 +1230,11 @@ class ZoomBotAdapter {
           );
           // Only click if currently unmuted (label says "mute", not "unmute")
           if (label.includes("mute") && !label.includes("unmute")) {
-            await muteButton.click();
+            try {
+              await muteButton.click();
+            } catch {
+              await muteButton.evaluate((btn) => btn.click());
+            }
             muted = true;
             break;
           } else if (label.includes("unmute")) {

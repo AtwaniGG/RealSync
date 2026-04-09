@@ -359,10 +359,12 @@ interface ApiAlertRow {
 // If there are no data points we return null (unknown), not a fake 95.
 function computeTrustAvg(alertRows: ApiAlertRow[], durationMins: number): number | null {
   if (durationMins === 0 && alertRows.length === 0) return null
-  // Penalty per severity
   const penalty: Record<string, number> = { critical: 20, high: 10, medium: 5, low: 2 }
   const totalPenalty = alertRows.reduce((sum, a) => sum + (penalty[a.severity] ?? 0), 0)
-  return Math.max(0, Math.min(100, Math.round(100 - totalPenalty)))
+  // Diminishing returns: sqrt scaling prevents alert bursts from zeroing the score
+  // Examples: 0 alerts → 100%, 2 alerts (30pts) → 78%, 27 alerts (288pts) → 32%
+  const scaledPenalty = Math.sqrt(totalPenalty) * 4
+  return Math.max(0, Math.min(100, Math.round(100 - scaledPenalty)))
 }
 
 // Convert API report data + alert rows to UI ReportData shape

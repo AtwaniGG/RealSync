@@ -342,8 +342,19 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
             "deepfake": deepfake_result,
         })
 
-    # Aggregate: use the largest detected face as primary (most likely the active speaker)
-    primary = max(face_results, key=lambda f: f["bbox"]["w"] * f["bbox"]["h"])
+    # Log per-face scores for diagnostics
+    for fr in face_results:
+        auth = fr["deepfake"]["authenticityScore"]
+        logger.info(
+            "Face %d: bbox=(%d,%d,%d,%d) area=%d auth=%.4f emotion=%s",
+            fr["faceId"], fr["bbox"]["x"], fr["bbox"]["y"], fr["bbox"]["w"], fr["bbox"]["h"],
+            fr["bbox"]["w"] * fr["bbox"]["h"],
+            auth if auth is not None else -1,
+            fr["emotion"]["label"],
+        )
+
+    # Aggregate: use the largest face, tiebreak by leftmost position (top-left = primary in gallery)
+    primary = max(face_results, key=lambda f: (f["bbox"]["w"] * f["bbox"]["h"], -f["bbox"]["x"]))
 
     auth_score = primary["deepfake"]["authenticityScore"]
     effective_auth = auth_score if auth_score is not None else 0.5
