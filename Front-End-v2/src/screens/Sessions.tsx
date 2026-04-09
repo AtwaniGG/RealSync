@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
 import {
   Briefcase, Users, Star, Clock, AlertTriangle, Trash2, Monitor, FileText,
-  ExternalLink, CheckCircle, Loader, X, Play,
+  ExternalLink, CheckCircle, Loader, X, Play, Square,
 } from 'lucide-react'
 import $ from '../lib/tokens'
 import { EASE, LABEL_STYLE, MONO_STYLE } from '../lib/tokens'
@@ -169,7 +169,7 @@ function apiStatusToLocal(apiSession: Record<string, unknown>): Session {
   }
 }
 
-function TableRow({ session, index, onDelete, onMonitor, onViewReport }: { session: Session; index: number; onDelete: (id: string) => void; onMonitor: (s: Session) => void; onViewReport: (id: string) => void }) {
+function TableRow({ session, index, onDelete, onMonitor, onViewReport, onStop }: { session: Session; index: number; onDelete: (id: string) => void; onMonitor: (s: Session) => void; onViewReport: (id: string) => void; onStop: (id: string) => void }) {
   const [hov, setHov] = useState(false)
   const alertColor = session.alerts >= 5 ? $.red : session.alerts >= 2 ? '#F59E0B' : session.alerts === 1 ? $.blue : $.t4
   const TypeIcon = SESSION_TYPE_CONFIG[session.type]?.icon ?? Briefcase
@@ -237,6 +237,7 @@ function TableRow({ session, index, onDelete, onMonitor, onViewReport }: { sessi
             <>
               <IconBtn icon={Monitor} title="Monitor live" color={$.cyan} onClick={() => onMonitor(session)} />
               {session.zoomUrl && <IconBtn icon={ExternalLink} title="Open in Zoom" color={$.t2} onClick={() => window.open(session.zoomUrl, '_blank')} />}
+              <IconBtn icon={Square} title="End session" color="#F59E0B" onClick={() => onStop(session.id)} />
             </>
           )}
           <IconBtn icon={Trash2} title="Delete session" color={$.red} onClick={() => onDelete(session.id)} />
@@ -246,7 +247,7 @@ function TableRow({ session, index, onDelete, onMonitor, onViewReport }: { sessi
   )
 }
 
-function MobileCard({ session, index, onDelete, onMonitor, onViewReport }: { session: Session; index: number; onDelete: (id: string) => void; onMonitor: (s: Session) => void; onViewReport: (id: string) => void }) {
+function MobileCard({ session, index, onDelete, onMonitor, onViewReport, onStop }: { session: Session; index: number; onDelete: (id: string) => void; onMonitor: (s: Session) => void; onViewReport: (id: string) => void; onStop: (id: string) => void }) {
   const alertColor = session.alerts >= 5 ? $.red : session.alerts >= 2 ? '#F59E0B' : session.alerts === 1 ? $.blue : $.t4
   const TypeIcon = SESSION_TYPE_CONFIG[session.type]?.icon ?? Briefcase
 
@@ -296,6 +297,7 @@ function MobileCard({ session, index, onDelete, onMonitor, onViewReport }: { ses
             <>
               <IconBtn icon={Monitor} title="Monitor" color={$.cyan} onClick={() => onMonitor(session)} />
               {session.zoomUrl && <IconBtn icon={ExternalLink} title="Open in Zoom" color={$.t2} onClick={() => window.open(session.zoomUrl, '_blank')} />}
+              <IconBtn icon={Square} title="End session" color="#F59E0B" onClick={() => onStop(session.id)} />
             </>
           )}
           <IconBtn icon={Trash2} title="Delete" color={$.red} onClick={() => onDelete(session.id)} />
@@ -610,6 +612,16 @@ export default function Sessions() {
     setSessions((prev) => prev.filter((s) => s.id !== id))
   }, [activeSession?.sessionId, handleEndSession])
 
+  const handleStop = useCallback(async (id: string) => {
+    try {
+      const res = await authFetch(`/api/sessions/${id}/stop`, { method: 'POST' })
+      if (!res.ok) throw new Error('Failed to stop session')
+    } catch {
+      // Best-effort
+    }
+    await fetchSessions()
+  }, [fetchSessions])
+
   const handleMonitor = useCallback((session: Session) => {
     handleStartSession(session.id, session.title, session.type)
   }, [handleStartSession])
@@ -688,7 +700,7 @@ export default function Sessions() {
           <div style={{ padding: '10px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
             <AnimatePresence>
               {filtered.map((s, i) => (
-                <MobileCard key={s.id} session={s} index={i} onDelete={handleDelete} onMonitor={handleMonitor} onViewReport={handleViewReport} />
+                <MobileCard key={s.id} session={s} index={i} onDelete={handleDelete} onMonitor={handleMonitor} onViewReport={handleViewReport} onStop={handleStop} />
               ))}
             </AnimatePresence>
           </div>
@@ -709,7 +721,7 @@ export default function Sessions() {
               <tbody>
                 <AnimatePresence>
                   {filtered.map((s, i) => (
-                    <TableRow key={s.id} session={s} index={i} onDelete={handleDelete} onMonitor={handleMonitor} onViewReport={handleViewReport} />
+                    <TableRow key={s.id} session={s} index={i} onDelete={handleDelete} onMonitor={handleMonitor} onViewReport={handleViewReport} onStop={handleStop} />
                   ))}
                 </AnimatePresence>
               </tbody>

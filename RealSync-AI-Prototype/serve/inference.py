@@ -289,13 +289,18 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
             # making real faces score LOWER on CLIP, while inswapper's clean 128px upsampling
             # survives compression and scores HIGHER. Invert CLIP so lower raw = more authentic.
             clip_score = round(1.0 - clip_score, 4)
+            logger.info(
+                "Ensemble components session=%s: clip_raw=%.4f clip_inv=%.4f freq=%.4f boundary=%.4f",
+                session_id, clip_result.get("authenticityScore", -1), clip_score,
+                freq_score, boundary_score,
+            )
 
             # Adaptive: when frequency signal is weak (Zoom H.264 strips texture),
             # boost CLIP weight from 50%→65% and reduce frequency from 30%→15%
             if freq_score < 0.55:
                 eff_clip_w = 0.65
                 eff_freq_w = 0.15
-                eff_bnd_w = ENSEMBLE_WEIGHT_BOUNDARY  # 0.20 stays
+                eff_bnd_w = ENSEMBLE_WEIGHT_BOUNDARY
             else:
                 eff_clip_w = ENSEMBLE_WEIGHT_CLIP
                 eff_freq_w = ENSEMBLE_WEIGHT_FREQUENCY

@@ -70,8 +70,8 @@ TEXT_INFERENCE_TIMEOUT = 15
 
 # --- Ensemble Deepfake Detection ---
 ENSEMBLE_WEIGHT_CLIP = 0.50       # Semantic/spatial analysis (CLIP ViT-L/14)
-ENSEMBLE_WEIGHT_FREQUENCY = 0.30  # Frequency-domain artifacts (DCT/FFT)
-ENSEMBLE_WEIGHT_BOUNDARY = 0.20   # Face boundary blending artifacts
+ENSEMBLE_WEIGHT_FREQUENCY = 0.25  # Frequency-domain artifacts (DCT/FFT) — reduced: Zoom H.264 degrades signal
+ENSEMBLE_WEIGHT_BOUNDARY = 0.25   # Face boundary blending artifacts — boosted: more resilient to compression
 
 # --- Inference ---
 INFERENCE_TIMEOUT_S = 30

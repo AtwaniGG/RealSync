@@ -219,6 +219,11 @@ class ZoomBotAdapter {
 
       if (this._stopped) { await this._cleanup(); return; }
 
+      // Mute the bot's microphone — it should observe only, never transmit
+      await this._autoMute();
+
+      if (this._stopped) { await this._cleanup(); return; }
+
       // Dismiss Zoom popup dialogs that overlay the video
       await this._dismissZoomPopups();
 
@@ -226,6 +231,11 @@ class ZoomBotAdapter {
 
       // Hide the bot's own video tile so screenshots only contain other participants
       await this._hideSelfView();
+
+      if (this._stopped) { await this._cleanup(); return; }
+
+      // Switch to Speaker View so the active speaker fills the main frame
+      await this._switchToSpeakerView();
 
       if (this._stopped) { await this._cleanup(); return; }
 
@@ -1089,6 +1099,156 @@ class ZoomBotAdapter {
   }
 
   /**
+   * Switch Zoom's layout to Speaker View so the active speaker fills the main frame.
+   * Gallery View (small tiles) reduces AI detection accuracy — Speaker View is required
+   * for reliable deepfake analysis.
+   *
+   * Non-fatal: layout may already be in Speaker View, or Zoom's UI may differ.
+   */
+  async _switchToSpeakerView() {
+    try {
+      // Wait for toolbar to render
+      await sleep(1000);
+
+      // Click the "View" button in Zoom's toolbar
+      const viewButton = await this.page.$(
+        [
+          'button[aria-label*="view" i]',
+          'button[aria-label="View"]',
+        ].join(", ")
+      );
+
+      if (!viewButton) {
+        // Fallback: find by button text
+        const found = await this.page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll("button"));
+          for (const btn of buttons) {
+            if (btn.textContent?.trim().toLowerCase() === "view") {
+              btn.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        if (!found) {
+          log.info("zoomBot", "Speaker view: View button not found — skipping.");
+          return;
+        }
+      } else {
+        await viewButton.click();
+      }
+
+      // Wait for dropdown to open
+      await sleep(500);
+
+      // Click "Speaker" from the dropdown menu items
+      const clicked = await this.page.evaluate(() => {
+        const items = Array.from(document.querySelectorAll(
+          '[role="menuitem"], [role="option"], li, button'
+        ));
+        for (const item of items) {
+          const text = (item.textContent || "").trim().toLowerCase();
+          if (text === "speaker" || text.startsWith("speaker view")) {
+            item.click();
+            return true;
+          }
+        }
+        return false;
+      });
+
+      // Wait for view to switch
+      await sleep(1000);
+
+      // Verify: speaker-active-container should now exist
+      const inSpeakerView = await this.page.$(".speaker-active-container__video-frame")
+        .then((el) => !!el)
+        .catch(() => false);
+
+      if (clicked && inSpeakerView) {
+        log.info("zoomBot", "Switched to Speaker View successfully.");
+      } else if (clicked) {
+        log.info("zoomBot", "Clicked Speaker View option — could not verify selector, may already be active.");
+      } else {
+        log.info("zoomBot", "Speaker View option not found in View menu — layout unchanged.");
+      }
+    } catch (err) {
+      log.warn("zoomBot", `Switch to Speaker View failed (non-fatal): ${err.message}`);
+    }
+  }
+
+  /**
+   * Mute the bot's microphone after joining.
+   * The bot should never transmit audio — it joins to observe only.
+   *
+   * Non-fatal: if muting fails, the meeting host can mute manually.
+   */
+  async _autoMute() {
+    try {
+      // Wait for toolbar to render
+      await sleep(1000);
+
+      let muted = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        // Look for a mute button that is currently in the "Mute" state
+        // (i.e., the bot is currently UNMUTED and the button label says "Mute")
+        const muteButton = await this.page.$(
+          'button[aria-label*="mute" i]'
+        );
+
+        if (muteButton) {
+          const label = await muteButton.evaluate((btn) =>
+            (btn.getAttribute("aria-label") || btn.textContent || "").trim().toLowerCase()
+          );
+          // Only click if currently unmuted (label says "mute", not "unmute")
+          if (label.includes("mute") && !label.includes("unmute")) {
+            await muteButton.click();
+            muted = true;
+            break;
+          } else if (label.includes("unmute")) {
+            // Already muted — nothing to do
+            muted = true;
+            break;
+          }
+        }
+
+        // Fallback: find by button text
+        const found = await this.page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll("button"));
+          for (const btn of buttons) {
+            const text = (btn.textContent?.trim() || "").toLowerCase();
+            const label = (btn.getAttribute("aria-label") || "").toLowerCase();
+            const combined = text + " " + label;
+            if (combined.includes("unmute")) {
+              // Already muted
+              return "already-muted";
+            }
+            if (combined.includes("mute")) {
+              btn.click();
+              return "muted";
+            }
+          }
+          return null;
+        });
+
+        if (found === "muted" || found === "already-muted") {
+          muted = true;
+          break;
+        }
+
+        await sleep(500);
+      }
+
+      if (muted) {
+        log.info("zoomBot", "Bot microphone muted successfully.");
+      } else {
+        log.warn("zoomBot", "Auto-mute: could not find mute button after 3 attempts (non-fatal).");
+      }
+    } catch (err) {
+      log.warn("zoomBot", `Auto-mute failed (non-fatal): ${err.message}`);
+    }
+  }
+
+  /**
    * Try to enable Zoom's built-in closed captions / live transcript.
    */
   async _enableClosedCaptions() {
@@ -1209,7 +1369,6 @@ class ZoomBotAdapter {
 
           // Helper: extract participant name from a container element
           function extractName(container) {
-            // Try specific name selectors first, then fall back to text content
             const selectors = [
               '.video-avatar__avatar-footer',
               '[class*="display-name"]',
@@ -1228,22 +1387,25 @@ class ZoomBotAdapter {
             return null;
           }
 
-          // Strategy 1 (primary): Zoom's active speaker large view
-          // The speaker-active-container__video-frame holds the main/active speaker
-          const activeFrame = document.querySelector('.speaker-active-container__video-frame');
-          if (activeFrame) {
-            const name = extractName(activeFrame);
-            if (name) return name;
+          // Detect which layout we're in
+          const isSpeakerView = !!document.querySelector('.speaker-active-container');
+
+          if (isSpeakerView) {
+            // Speaker View: the main frame IS the active speaker
+            const activeFrame = document.querySelector('.speaker-active-container__video-frame');
+            if (activeFrame) {
+              const name = extractName(activeFrame);
+              if (name) return name;
+            }
+            // Also check the speaker bar for the active tile
+            const activeTile = document.querySelector('.speaker-bar-container__video-frame--active');
+            if (activeTile) {
+              const name = extractName(activeTile);
+              if (name) return name;
+            }
           }
 
-          // Strategy 2: Zoom's speaker bar active tile (has --active suffix)
-          const activeTile = document.querySelector('.speaker-bar-container__video-frame--active');
-          if (activeTile) {
-            const name = extractName(activeTile);
-            if (name) return name;
-          }
-
-          // Strategy 3: Generic speaking indicators (for other Zoom layouts/versions)
+          // Gallery View (or Speaker View fallback): find the tile with speaking indicator
           const speakingSelectors = [
             '[class*="speaking"]:not([class*="non-speaking"])',
             '[class*="active-speaker"]',
@@ -1253,11 +1415,11 @@ class ZoomBotAdapter {
           for (const sel of speakingSelectors) {
             const tiles = document.querySelectorAll(sel);
             for (const tile of tiles) {
-              const name = extractName(tile) || tile.textContent?.trim();
-              if (name && name.length > 1 && name.length < 50 && name.toLowerCase() !== myLower) {
-                return name;
-              }
-              const parent = tile.closest('[class*="video"], [class*="participant"], [class*="tile"]');
+              // Try to extract name from the tile itself
+              const name = extractName(tile);
+              if (name) return name;
+              // Walk up to parent video container
+              const parent = tile.closest('[class*="video-avatar"], [class*="participant"], [class*="tile"], [class*="gallery-video-container"]');
               if (parent) {
                 const parentName = extractName(parent);
                 if (parentName) return parentName;
@@ -1265,28 +1427,8 @@ class ZoomBotAdapter {
             }
           }
 
-          // Strategy 4 (last resort): Name in the largest video area by Y position
-          const nameSelectors = [
-            '[class*="display-name"]',
-            '[class*="video-avatar"] [class*="name"]',
-            '[class*="avatar-footer"] [class*="name"]',
-          ];
-          let speaker = null;
-          let bestY = 0;
-          for (const sel of nameSelectors) {
-            const elements = document.querySelectorAll(sel);
-            for (const el of elements) {
-              const rect = el.getBoundingClientRect();
-              if (rect.width === 0 || rect.height === 0) continue;
-              const name = el.textContent?.trim();
-              if (!name || name.length > 50 || name.toLowerCase() === myLower) continue;
-              if (rect.y > 200 && rect.y > bestY) {
-                bestY = rect.y;
-                speaker = name;
-              }
-            }
-          }
-          return speaker || null;
+          // No active speaker detected
+          return null;
         }, this.displayName || "RealSync Bot").catch(() => null);
 
         // PNG capture with timeout: lossless, avoids JPEG re-compression artifacts
