@@ -10,8 +10,9 @@ import {
 } from 'lucide-react'
 import $ from '../lib/tokens'
 import { EASE, LABEL_STYLE, MONO_STYLE, trustColor, SEVERITY_CONFIG } from '../lib/tokens'
-import type { AlertSeverity } from '../lib/mockData'
 import { authFetch } from '../lib/api'
+
+type AlertSeverity = 'critical' | 'high' | 'medium' | 'low'
 import { useSessionContext } from '../contexts/SessionContext'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { generateReportReactPdf } from '../lib/generateReportReactPdf'

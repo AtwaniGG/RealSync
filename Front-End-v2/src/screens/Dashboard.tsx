@@ -8,13 +8,12 @@ import BentoCard from '../components/ui/BentoCard'
 import TrustGauge from '../components/ui/TrustGauge'
 import $ from '../lib/tokens'
 import { EASE, LABEL_STYLE, MONO_STYLE } from '../lib/tokens'
-import type { AlertSeverity } from '../lib/mockData'
 import { useWsMessages, useWebSocket } from '../contexts/WebSocketContext'
 import { useSessionContext } from '../contexts/SessionContext'
 import { authFetch } from '../lib/api'
 import { useIsMobile } from '../hooks/useIsMobile'
 
-const LABEL = LABEL_STYLE
+type AlertSeverity = 'critical' | 'high' | 'medium' | 'low'
 
 const SEVERITY_STYLE: Record<AlertSeverity, { color: string; bg: string; icon: typeof AlertCircle }> = {
   critical: { color: '#EF4444', bg: 'rgba(239,68,68,0.08)', icon: AlertCircle },
@@ -55,8 +54,8 @@ interface TrustPoint { t: string; score: number }
 const DEFAULT_METRICS: LiveMetrics = {
   trustScore: 0,
   emotion: { label: 'Neutral', confidence: 0 },
-  deepfake: { authenticityScore: 0, riskLevel: undefined as unknown as RiskLevel },
-  confidenceLayers: { audio: 0, video: 0, behavior: 0 },
+  deepfake: { authenticityScore: 0, riskLevel: 'low' },
+  confidenceLayers: { audio: null, video: null, behavior: null },
   source: 'waiting',
   timestamp: new Date().toISOString(),
 }
@@ -321,7 +320,7 @@ export default function Dashboard() {
               <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg, ${card.accent}, transparent)` }} />
               <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6 }}>
                 <card.icon size={11} color={card.accent} />
-                <span style={LABEL}>{card.label}</span>
+                <span style={LABEL_STYLE}>{card.label}</span>
               </div>
               <div style={{ fontSize: 20, fontFamily: 'JetBrains Mono, monospace', color: $.t1, fontWeight: 400, fontFeatureSettings: "'tnum' 1", marginBottom: 3 }}>{card.val}</div>
               <div style={{ fontSize: 10, color: card.accent }}>{card.sub}</div>
@@ -332,7 +331,7 @@ export default function Dashboard() {
         {/* Trust gauge */}
         <BentoCard delay={0.2}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-            <span style={LABEL}>Live Trust Score</span>
+            <span style={LABEL_STYLE}>Live Trust Score</span>
             <span style={{ fontSize: 9, color: $.t4, fontFamily: 'JetBrains Mono, monospace' }}>{dataSource}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
@@ -381,7 +380,7 @@ export default function Dashboard() {
           <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg, ${card.accent}, transparent)` }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
             <card.icon size={13} color={card.accent} />
-            <span style={LABEL}>{card.label}</span>
+            <span style={LABEL_STYLE}>{card.label}</span>
           </div>
           <div style={{ fontSize: 22, fontFamily: 'JetBrains Mono, monospace', color: $.t1, fontWeight: 400, fontFeatureSettings: "'tnum' 1", marginBottom: 4 }}>{card.val}</div>
           <div style={{ fontSize: 11, color: card.accent }}>{card.sub}</div>
@@ -391,7 +390,7 @@ export default function Dashboard() {
       {/* Trust gauge — spans rows 2-3 */}
       <BentoCard span={5} rowSpan={2} delay={0.2}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <span style={LABEL}>Live Trust Score</span>
+          <span style={LABEL_STYLE}>Live Trust Score</span>
           <span style={{ fontSize: 9, color: $.t4, fontFamily: 'JetBrains Mono, monospace' }}>{dataSource}</span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}>
@@ -412,7 +411,7 @@ export default function Dashboard() {
       {/* Alert feed */}
       <BentoCard span={4} rowSpan={2} delay={0.25} style={{ display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <span style={LABEL}>Live Alerts</span>
+          <span style={LABEL_STYLE}>Live Alerts</span>
           <span style={{ fontSize: 10, color: $.t4, fontFamily: 'JetBrains Mono, monospace' }}>{alerts.length}</span>
         </div>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, overflowY: 'auto' }}>
@@ -423,7 +422,7 @@ export default function Dashboard() {
       {/* Timeline */}
       <BentoCard span={12} delay={0.5} style={{ padding: '16px 16px 8px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <span style={LABEL}>Trust Score Timeline</span>
+          <span style={LABEL_STYLE}>Trust Score Timeline</span>
           <span style={{ fontSize: 10, color: $.t4, fontFamily: 'JetBrains Mono, monospace' }}>{dataSource}</span>
         </div>
         <TimelineChart data={timeline} height={120} margin={{ top: 4, right: 4, bottom: 0, left: -20 }} interval={4} />

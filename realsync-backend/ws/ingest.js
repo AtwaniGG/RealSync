@@ -1,6 +1,7 @@
 const WebSocket = require("ws");
 const { authenticateWsToken } = require("../lib/auth");
 const { MEETING_TYPES } = require("../lib/suggestions");
+const { MAX_FRAME_B64_SIZE, MAX_AUDIO_B64_SIZE, MAX_CAPTION_LENGTH, MAX_SESSION_ALERTS } = require("../lib/constants");
 const persistence = require("../lib/persistence");
 const log = require("../lib/logger");
 const { getSession, broadcastToSession, makeIso } = require("../services/sessionManager");
@@ -22,15 +23,14 @@ function processIngestMessage(session, message) {
   if (session.endedAt) return;
 
   if (message.type === "frame") {
-    // Validate frame size (same as WS ingest handler)
-    if (typeof message.dataB64 === "string" && message.dataB64.length > 2 * 1024 * 1024) return;
+    if (typeof message.dataB64 === "string" && message.dataB64.length > MAX_FRAME_B64_SIZE) return;
     handleFrame(session, message).catch((err) => {
       log.warn("ingest", `Frame analysis error for session ${session.id}: ${err?.message ?? err}`);
     });
 
   } else if (message.type === "caption") {
     const text = typeof message.text === "string" ? message.text : "";
-    if (!text.trim() || text.length > 1000) return;
+    if (!text.trim() || text.length > MAX_CAPTION_LENGTH) return;
     const speaker = typeof message.speaker === "string" ? message.speaker.trim().slice(0, 100) : "unknown";
     handleTranscript(session, {
       text,
@@ -99,11 +99,11 @@ function processIngestMessage(session, message) {
     });
 
   } else if (message.type === "audio_pcm") {
-    // Validate audio format (same strict check as WS ingest handler)
+    // Validate audio format: PCM16 mono 16kHz only
     if (message.sampleRate !== 16000 || message.channels !== 1) return;
     const dataB64 = message.dataB64;
     // #14: Validate audio payload size to prevent DoS via oversized chunks
-    if (typeof dataB64 === "string" && dataB64.length > 512 * 1024) return;
+    if (typeof dataB64 === "string" && dataB64.length > MAX_AUDIO_B64_SIZE) return;
     if (typeof dataB64 === "string" && dataB64) {
       processAudioChunk(session, dataB64);
     }
@@ -191,8 +191,8 @@ function attachIngestHandler(wssIngest) {
       broadcastToSession(session.id, alertPayload);
       session.alerts.push(alertPayload);
       // M18: Cap in-memory alerts to prevent unbounded growth
-      if (session.alerts.length > 200) {
-        session.alerts = session.alerts.slice(-200);
+      if (session.alerts.length > MAX_SESSION_ALERTS) {
+        session.alerts = session.alerts.slice(-MAX_SESSION_ALERTS);
       }
 
       // Re-check: user may have ended session during broadcast
@@ -230,6 +230,7 @@ function attachIngestHandler(wssIngest) {
 
       if (!message || typeof message !== "object") return;
 
+      // WS-only control messages (not handled by processIngestMessage)
       if (message.type === "start") {
         if (MEETING_TYPES.includes(message.meetingType)) {
           session.meetingTypeSelected = message.meetingType;
@@ -243,116 +244,9 @@ function attachIngestHandler(wssIngest) {
         return;
       }
 
-      if (message.type === "audio_pcm") {
-        if (message.sampleRate !== 16000 || message.channels !== 1) {
-          return;
-        }
-
-        const dataB64 = message.dataB64;
-        if (typeof dataB64 !== "string" || !dataB64) return;
-        // Reject oversized audio chunks (matches processIngestMessage validation)
-        if (dataB64.length > 512 * 1024) return;
-
-        processAudioChunk(session, dataB64);
-        return;
-      }
-
-      // Video frame: forward to AI Inference Service for analysis
-      if (message.type === "frame") {
-        // Reject oversized frames (>2MB base64)
-        if (typeof message.dataB64 === "string" && message.dataB64.length > 2 * 1024 * 1024) {
-          return;
-        }
-        handleFrame(session, message).catch((err) => {
-          log.warn("ingest", `Frame analysis error for session ${session.id}: ${err?.message ?? err}`);
-        });
-        return;
-      }
-
-      // Captions from Zoom CC or similar source
-      if (message.type === "caption") {
-        const text = typeof message.text === "string" ? message.text : "";
-        if (!text.trim()) return;
-        // Reject oversized captions
-        if (text.length > 1000) return;
-        const speaker = typeof message.speaker === "string" ? message.speaker.trim().slice(0, 100) : "unknown";
-
-        handleTranscript(session, {
-          text,
-          isFinal: true,
-          confidence: 0.95, // Captions are high-confidence
-          ts: message.ts || makeIso(),
-          speaker,
-          source: "caption",
-        });
-        return;
-      }
-
-      // Participants list from bot panel scraper (same logic as processIngestMessage)
-      if (message.type === "participants") {
-        const rawNames = Array.isArray(message.participants)
-          ? message.participants.map((p) => (typeof p === "string" ? p : p?.name)).filter(Boolean)
-          : message.names;
-        if (!Array.isArray(rawNames)) return;
-        const names = rawNames
-          .slice(0, 20)
-          .filter((n) => typeof n === "string" && n.trim().length > 0)
-          .map((n) => n.trim().slice(0, 100));
-        if (names.length === 0) return;
-
-        const now = makeIso();
-        names.forEach((name, index) => {
-          const existing = session.participants.get(index);
-          session.participants.set(index, { name, firstSeen: existing?.firstSeen || now });
-        });
-
-        const participantList = Array.from(session.participants.entries()).map(
-          ([faceId, data]) => ({ faceId, name: data.name, firstSeen: data.firstSeen })
-        );
-        broadcastToSession(session.id, { type: "participants", participants: participantList, ts: now });
-        return;
-      }
-
-      // Bot fallback notification — real bot failed
-      if (message.type === "bot_fallback") {
-        log.warn("ingest", `Bot fallback for session ${session.id}: ${message.reason} — ${message.message}`);
-        session.source = "error";
-        broadcastToSession(session.id, {
-          type: "alert",
-          alertId: `bot-fallback-${Date.now()}`,
-          severity: "high",
-          category: "system",
-          title: "Bot Connection Failed",
-          message: String(message.message || "Bot could not join the meeting. No analysis available until the bot connects.").slice(0, 500),
-          recommendation: "Check the Zoom meeting URL and try again.",
-          source: "system",
-          ts: message.ts || makeIso(),
-          sessionId: session.id,
-        });
-        return;
-      }
-
-      // Source status heartbeat from bot adapter
-      if (message.type === "source_status") {
-        session.botStatus = message.status || "connected";
-        session.botStreams = message.streams || { audio: false, video: false, captions: false };
-
-        // Mark source as external when bot connects so broadcast loop
-        // stops overwriting real data with simulated metrics
-        if (session.botStatus === "connected" || session.botStatus === "joining") {
-          session.source = "external";
-        }
-
-        broadcastToSession(session.id, {
-          type: "sourceStatus",
-          status: session.botStatus,
-          streams: session.botStreams,
-          ts: message.ts || makeIso(),
-        });
-
-        persistence.updateBotStatus(session.id, session.botStatus).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
-        return;
-      }
+      // Delegate all data messages to the shared processor
+      // (frame, caption, source_status, participants, bot_fallback, audio_pcm)
+      processIngestMessage(session, message);
     });
 
   });

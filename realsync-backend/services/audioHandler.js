@@ -7,30 +7,13 @@ const log = require("../lib/logger");
 const MAX_AUDIO_BUFFER_CHUNKS = 128;
 const AUDIO_ANALYSIS_INTERVAL_MS = 3_000;
 const AUDIO_DEEPFAKE_ENABLED = process.env.AUDIO_DEEPFAKE_ENABLED !== "false";
+const RMS_SILENCE_THRESHOLD = 100; // PCM16 range -32768..32767; below this = silence
 
 /**
  * Combine base64 audio chunks into a single base64 string.
  */
 function combineAudioChunks(chunks) {
   return Buffer.concat(chunks.map(b64 => Buffer.from(b64, "base64"))).toString("base64");
-}
-
-/**
- * Check if PCM16 audio buffer contains actual signal (not silence).
- * Returns true if RMS energy exceeds a threshold.
- */
-function hasAudioSignal(b64) {
-  const buf = Buffer.from(b64, "base64");
-  const samples = buf.length / 2;
-  if (samples === 0) return false;
-  let sumSq = 0;
-  for (let i = 0; i < buf.length - 1; i += 2) {
-    const sample = buf.readInt16LE(i);
-    sumSq += sample * sample;
-  }
-  const rms = Math.sqrt(sumSq / samples);
-  // PCM16 range is -32768 to 32767; RMS > 100 indicates non-silence
-  return rms > 100;
 }
 
 /**
@@ -77,7 +60,7 @@ function processAudioChunk(session, dataB64) {
     }
     rmsEnergy = Math.sqrt(rmsEnergy / (pcmBuf.length / 2));
 
-    if (rmsEnergy < 100) {
+    if (rmsEnergy < RMS_SILENCE_THRESHOLD) {
       // Silence detected — skip AI analysis to avoid false "spoofed" flags
       session.audioHasSignal = false;
       return;

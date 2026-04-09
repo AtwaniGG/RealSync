@@ -14,9 +14,6 @@ import re
 import sys
 import os
 
-import cv2
-import numpy as np
-
 logger = logging.getLogger(__name__)
 
 SRC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src")
@@ -96,6 +93,8 @@ async def lifespan(app: FastAPI):
 
     logger.info("Running warmup inference...")
     try:
+        import cv2
+        import numpy as np
         dummy_img = np.zeros((256, 256, 3), dtype=np.uint8)
         if face_det is not None:
             import mediapipe as mp

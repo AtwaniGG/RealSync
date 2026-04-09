@@ -1,5 +1,6 @@
 const { analyzeFrame } = require("../lib/aiClient");
 const { getRecommendation } = require("../lib/recommendations");
+const { MAX_SESSION_ALERTS } = require("../lib/constants");
 const persistence = require("../lib/persistence");
 const log = require("../lib/logger");
 const { broadcastToSession, makeIso } = require("./sessionManager");
@@ -102,7 +103,7 @@ async function handleFrame(session, message) {
     visualAlerts.forEach((alert) => {
       alert.recommendation = getRecommendation(alert.category, alert.severity);
       session.alerts.push(alert);
-      if (session.alerts.length > 200) { session.alerts = session.alerts.slice(-200); }
+      if (session.alerts.length > MAX_SESSION_ALERTS) { session.alerts = session.alerts.slice(-MAX_SESSION_ALERTS); }
       broadcastToSession(session.id, { type: "alert", ...alert });
       persistence.insertAlert(session.id, alert).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
     });
@@ -126,7 +127,7 @@ async function handleFrame(session, message) {
       faceAlerts.forEach((alert) => {
         alert.recommendation = getRecommendation(alert.category, alert.severity);
         session.alerts.push(alert);
-        if (session.alerts.length > 200) { session.alerts = session.alerts.slice(-200); }
+        if (session.alerts.length > MAX_SESSION_ALERTS) { session.alerts = session.alerts.slice(-MAX_SESSION_ALERTS); }
         broadcastToSession(session.id, { type: "alert", ...alert });
         persistence.insertAlert(session.id, alert).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
       });
@@ -137,7 +138,7 @@ async function handleFrame(session, message) {
     for (const ta of temporalAlerts) {
       ta.recommendation = getRecommendation(ta.category, ta.severity);
       session.alerts.push(ta);
-      if (session.alerts.length > 200) { session.alerts = session.alerts.slice(-200); }
+      if (session.alerts.length > MAX_SESSION_ALERTS) { session.alerts = session.alerts.slice(-MAX_SESSION_ALERTS); }
       broadcastToSession(session.id, { type: "alert", ...ta });
       persistence.insertAlert(session.id, ta).catch((err) => { log.warn("persistence", `operation failed: ${err?.message ?? err}`); });
     }
