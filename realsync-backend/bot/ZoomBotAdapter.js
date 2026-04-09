@@ -1107,6 +1107,14 @@ class ZoomBotAdapter {
    */
   async _switchToSpeakerView() {
     try {
+      // Reveal the Zoom toolbar by hovering near the bottom of the viewport
+      await this.page.mouse.move(960, 1070);
+      await sleep(1000);
+      // Move mouse again to ensure toolbar stays visible
+      await this.page.mouse.move(960, 1060);
+      await sleep(500);
+      log.info("zoomBot", "Toolbar revealed via mouse hover.");
+
       // Wait for toolbar to render
       await sleep(1000);
 
@@ -1184,6 +1192,12 @@ class ZoomBotAdapter {
    */
   async _autoMute() {
     try {
+      // Reveal the Zoom toolbar by hovering near the bottom of the viewport
+      await this.page.mouse.move(960, 1070);
+      await sleep(1000);
+      await this.page.mouse.move(960, 1060);
+      await sleep(500);
+
       // Wait for toolbar to render
       await sleep(1000);
 

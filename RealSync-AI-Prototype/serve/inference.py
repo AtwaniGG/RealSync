@@ -285,14 +285,10 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
         boundary_score = boundary_result["boundaryScore"]
 
         if clip_score is not None:
-            # Zoom compression inversion: H.264 destroys real face texture (noise, pores)
-            # making real faces score LOWER on CLIP, while inswapper's clean 128px upsampling
-            # survives compression and scores HIGHER. Invert CLIP so lower raw = more authentic.
-            clip_score = round(1.0 - clip_score, 4)
+            clip_score = round(clip_score, 4)
             logger.info(
-                "Ensemble components session=%s: clip_raw=%.4f clip_inv=%.4f freq=%.4f boundary=%.4f",
-                session_id, clip_result.get("authenticityScore", -1), clip_score,
-                freq_score, boundary_score,
+                "Ensemble components session=%s: clip=%.4f freq=%.4f boundary=%.4f",
+                session_id, clip_score, freq_score, boundary_score,
             )
 
             # Adaptive: when frequency signal is weak (Zoom H.264 strips texture),
@@ -346,8 +342,8 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
             "deepfake": deepfake_result,
         })
 
-    # Aggregate: primary face
-    primary = face_results[0]
+    # Aggregate: use the largest detected face as primary (most likely the active speaker)
+    primary = max(face_results, key=lambda f: f["bbox"]["w"] * f["bbox"]["h"])
 
     auth_score = primary["deepfake"]["authenticityScore"]
     effective_auth = auth_score if auth_score is not None else 0.5
