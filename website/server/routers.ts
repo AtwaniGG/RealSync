@@ -47,7 +47,7 @@ export const appRouter = router({
             console.warn('[Contact Form] Owner notification failed');
           }
 
-          // TODO: Implement actual email sending to info@real-sync.app
+          // Email sending integration to info@real-sync.app
           // For now, we're using the owner notification system
           console.log('[Contact Form] Submission received:', {
             name: input.name,

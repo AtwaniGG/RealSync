@@ -25,7 +25,7 @@ Results from all three layers feed into a Sequential Probability Ratio Test (SPR
 │  Frontend           │◄──────────────────►│  Backend             │◄──────────────────►│  AI Service          │
 │  React + TypeScript │  subscribe/ingest  │  Node.js + Express   │  /api/analyze/*    │  Python + FastAPI    │
 │  :3000              │                    │  :4000               │                    │  :5100               │
-│  real-sync.app      │                    │  Railway             │                    │  RunPod GPU          │
+│  real-sync.app      │                    │  api.real-sync.app   │                    │  RunPod GPU          │
 └─────────────────────┘                    └──────────┬───────────┘                    └──────────────────────┘
                                                       │
                                            ┌──────────▼───────────┐
@@ -189,7 +189,7 @@ The manual end-to-end test plan is at [`docs/MANUAL_E2E_TEST_PLAN.md`](docs/MANU
 | AI service | Python 3.10, FastAPI, PyTorch, CLIP ViT-L/14, MediaPipe, WavLM, DeBERTa |
 | Database | Supabase (PostgreSQL) |
 | Auth | Supabase Auth (JWT + MFA) |
-| Deployment | Cloudflare Pages, Railway, RunPod |
+| Deployment | Cloudflare Pages, Oracle Cloud VPS, RunPod |
 
 ---
 
@@ -216,11 +216,13 @@ RealSync/
 │   ├── serve/
 │   │   ├── app.py                  # FastAPI entry point
 │   │   ├── inference.py            # Multi-modal analysis pipeline
-│   │   ├── deepfake_model.py       # CLIP ViT-L/14 deepfake detector
-│   │   ├── emotion_model.py        # Emotion classifier
+│   │   ├── clip_deepfake_model.py   # CLIP ViT-L/14 deepfake detector
+│   │   ├── emotion_model.py        # EfficientNet-B2 emotion classifier
 │   │   ├── audio_model.py          # WavLM audio deepfake detector
-│   │   ├── identity_tracker.py     # Face identity consistency
-│   │   ├── temporal_analyzer.py    # SPRT session-level decision
+│   │   ├── frequency_analyzer.py   # DCT frequency analysis
+│   │   ├── boundary_analyzer.py    # Face boundary texture analysis
+│   │   ├── temporal_analyzer.py    # EWMA temporal smoothing
+│   │   ├── sprt_detector.py        # SPRT session-level decision
 │   │   └── text_analyzer.py        # DeBERTa NLI transcript analysis
 │   └── tests/
 ├── contracts/                      # API schema definitions (JSON Schema)

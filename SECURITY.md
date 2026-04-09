@@ -14,7 +14,7 @@ If you discover a security vulnerability in RealSync, please report it responsib
 
 Instead, email the team directly:
 
-- **Ahmed Sarhan** — [ahmed@realsync.ai](mailto:ahmed@realsync.ai)
+- **Ahmed Sarhan** — [info@real-sync.app](mailto:info@real-sync.app)
 
 Please include:
 - Description of the vulnerability

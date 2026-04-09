@@ -32,6 +32,8 @@ __pycache__/
 RealSync-AI-Prototype/output/
 RealSync-AI-Prototype/data/
 RealSync-AI-Prototype/input/
+RealSync-AI-Prototype/src/models.zip
+RealSync-AI-Prototype/.venv 2
 
 # Bot screenshots
 realsync-backend/bot/screenshots/
@@ -41,6 +43,11 @@ realsync-backend/bot/screenshots/
 
 # Development artifacts
 HANDOFF*.md
+handoff-aws/
+test-ahmed/
+.research/
+demo-video/
+submission-prep/
 
 # Task tracking
 tasks/
@@ -51,7 +58,22 @@ tasks/
 
 # Logs
 *.log
-RealSync-AI-Prototype/src/models.zip
-RealSync-AI-Prototype/.venv 2
-.gitnexus
-.DS_Store
+
+# Platform configs (retired)
+railway.toml
+
+# Untracked frontends (not part of submission)
+frontend-overhaul/
+frontend-v2/
+
+# Website build artifacts (deployed via landing page repo)
+website/client/public/app/
+website/client/public/dashboard/
+
+# Root-level duplicates (originals in docs/)
+/BRAND_IDENTITY.md
+/FINAL_RELEASE_TECH_SPEC.md
+/AI_SERVICE_REPORT.md
+/brand-colors.css
+/FINAL-REPORT-DRAFT.md
+/README2.md
