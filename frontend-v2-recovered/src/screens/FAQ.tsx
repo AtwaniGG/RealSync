@@ -142,9 +142,9 @@ export default function FAQ() {
         }}
       >
         <p style={{ fontSize: isMobile ? 13 : 14, color: $.t2, marginBottom: 4 }}>Still have questions?</p>
-        <button style={{ background: 'none', border: 'none', color: $.cyan, fontSize: isMobile ? 13 : 14, fontWeight: 500, cursor: 'pointer', padding: 0 }}>
-          Contact support@realsync.ai
-        </button>
+        <a href="mailto:info@real-sync.app" style={{ background: 'none', border: 'none', color: $.cyan, fontSize: isMobile ? 13 : 14, fontWeight: 500, cursor: 'pointer', padding: 0, textDecoration: 'none' }}>
+          Contact info@real-sync.app
+        </a>
       </motion.div>
     </div>
   )
