@@ -285,6 +285,11 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
         boundary_score = boundary_result["boundaryScore"]
 
         if clip_score is not None:
+            # Zoom compression inversion: H.264 destroys real face texture (noise, pores)
+            # making real faces score LOWER on CLIP, while inswapper's clean 128px upsampling
+            # survives compression and scores HIGHER. Invert CLIP so lower raw = more authentic.
+            clip_score = round(1.0 - clip_score, 4)
+
             # Adaptive: when frequency signal is weak (Zoom H.264 strips texture),
             # boost CLIP weight from 50%→65% and reduce frequency from 30%→15%
             if freq_score < 0.55:

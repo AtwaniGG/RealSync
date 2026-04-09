@@ -35,8 +35,8 @@ DEEPFAKE_AUTH_THRESHOLD_HIGH_RISK = 0.40
 # --- SPRT (Sequential Probability Ratio Test) ---
 SPRT_ALPHA = 0.05              # Max false positive rate (flag real as fake)
 SPRT_BETA = 0.05               # Max false negative rate (miss a real fake)
-SPRT_REAL_MEAN = 0.78          # Calibrated from live Zoom E2E: real face ~0.75-0.82 with adaptive freq weights
-SPRT_FAKE_MEAN = 0.38          # Calibrated from live Zoom E2E: deepfake ~0.25-0.45 with adaptive freq weights
+SPRT_REAL_MEAN = 0.58          # Calibrated for Zoom + inverted CLIP: real face ~0.55-0.65
+SPRT_FAKE_MEAN = 0.30          # Calibrated for Zoom + inverted CLIP: deepfake ~0.25-0.35
 SPRT_SCORE_STD = 0.14          # Wider std to account for Zoom compression variance
 
 # --- Session ---
