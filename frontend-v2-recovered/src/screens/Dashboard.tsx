@@ -12,6 +12,7 @@ import type { AlertSeverity } from '../lib/mockData'
 import { useWsMessages, useWebSocket } from '../contexts/WebSocketContext'
 import { useSessionContext } from '../contexts/SessionContext'
 import { authFetch } from '../lib/api'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 const LABEL = LABEL_STYLE
 
@@ -192,7 +193,7 @@ function TimelineChart({ data, height, margin, interval }: { data: TrustPoint[];
 }
 
 export default function Dashboard() {
-  const isMobile = window.innerWidth <= 768
+  const isMobile = useIsMobile()
   const { activeSession } = useSessionContext()
   const { isConnected } = useWebSocket()
 

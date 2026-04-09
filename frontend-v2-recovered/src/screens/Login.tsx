@@ -6,6 +6,7 @@ import $ from '../lib/tokens'
 import { EASE } from '../lib/tokens'
 import { supabase } from '../lib/supabaseClient'
 import { isBlockedDomain } from '../lib/blockedDomains'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 const PROTOTYPE_MODE = import.meta.env.VITE_PROTOTYPE_MODE === '1'
 
@@ -86,7 +87,7 @@ function ScanLine({ cardRef }: { cardRef: React.RefObject<HTMLDivElement | null>
 
 export default function Login() {
   const navigate = useNavigate()
-  const isMobile = window.innerWidth < 768
+  const isMobile = useIsMobile(767)
   const cardRef = useRef<HTMLDivElement>(null)
 
   const [email, setEmail] = useState('')

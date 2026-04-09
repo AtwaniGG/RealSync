@@ -4,6 +4,7 @@ import { HelpCircle, ChevronDown, Zap, Shield, Lock, Users } from 'lucide-react'
 import $ from '../lib/tokens'
 import { EASE } from '../lib/tokens'
 import { FAQ_DATA } from '../lib/mockData'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 const ICON_MAP: Record<string, typeof HelpCircle> = {
   zap: Zap,
@@ -60,7 +61,7 @@ function FaqItem({ q, a, delay }: { q: string; a: string; delay: number }) {
 }
 
 export default function FAQ() {
-  const isMobile = window.innerWidth <= 768
+  const isMobile = useIsMobile()
 
   return (
     <div style={{ maxWidth: 800, margin: '0 auto' }}>

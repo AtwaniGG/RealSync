@@ -6,8 +6,12 @@ high-frequency texture (pores, hair, micro-detail). Face swaps — even with
 post-processing — lose this texture. The log-scale high-frequency ratio is
 the primary discriminator.
 """
+import logging
+
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def analyze_frequency(face_crop_bgr: np.ndarray) -> dict:
@@ -146,7 +150,7 @@ def analyze_frequency(face_crop_bgr: np.ndarray) -> dict:
         }
 
     except Exception as e:
-        print(f"[frequency_analyzer] Error: {e}")
+        logger.error("Error: %s", e)
         return {
             "frequencyScore": 0.5,
             "highFreqRatio": 0.0,

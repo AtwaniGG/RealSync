@@ -1,5 +1,5 @@
 const { Router } = require("express");
-const { requireSessionOwner } = require("../lib/auth");
+const { requireSessionOwner, validateSessionId } = require("../lib/auth");
 const botManager = require("../bot/botManager");
 const log = require("../lib/logger");
 const { getSession, rehydrateSession, broadcastToSession, makeIso } = require("../services/sessionManager");
@@ -11,13 +11,13 @@ const router = Router();
 /*  POST /api/sessions/:id/join — start bot in meeting                 */
 /* ------------------------------------------------------------------ */
 
-router.post("/api/sessions/:id/join", requireSessionOwner(getSession, rehydrateSession), (req, res) => {
+router.post("/api/sessions/:id/join", validateSessionId, requireSessionOwner(getSession, rehydrateSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
   if (session.endedAt) return res.status(410).json({ error: "Session has ended" });
 
   const { meetingUrl } = req.body ?? {};
-  const displayName = typeof req.body.displayName === "string" ? req.body.displayName.trim().slice(0, 100) : "RealSync Bot";
+  const displayName = typeof req.body?.displayName === "string" ? req.body.displayName.trim().slice(0, 100) : "RealSync Bot";
   if (!meetingUrl || typeof meetingUrl !== "string") {
     return res.status(400).json({ error: "meetingUrl is required" });
   }
@@ -65,7 +65,7 @@ router.post("/api/sessions/:id/join", requireSessionOwner(getSession, rehydrateS
 /*  POST /api/sessions/:id/leave — stop bot                            */
 /* ------------------------------------------------------------------ */
 
-router.post("/api/sessions/:id/leave", requireSessionOwner(getSession, rehydrateSession), (req, res) => {
+router.post("/api/sessions/:id/leave", validateSessionId, requireSessionOwner(getSession, rehydrateSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
 

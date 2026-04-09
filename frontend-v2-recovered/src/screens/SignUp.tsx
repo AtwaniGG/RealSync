@@ -9,6 +9,7 @@ import $ from '../lib/tokens'
 import { EASE } from '../lib/tokens'
 import { supabase } from '../lib/supabaseClient'
 import { isBlockedDomain } from '../lib/blockedDomains'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 // ─── SVG logos ────────────────────────────────────────────────────────────────
 const GoogleLogo = () => (
@@ -102,7 +103,7 @@ function getPasswordStrength(pw: string): { score: number; label: string; color:
 
 export default function SignUp() {
   const navigate = useNavigate()
-  const isMobile = window.innerWidth < 768
+  const isMobile = useIsMobile(767)
   const cardRef = useRef<HTMLDivElement>(null)
 
   const [email, setEmail] = useState('')

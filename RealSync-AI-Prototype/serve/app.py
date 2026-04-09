@@ -9,12 +9,15 @@ Run:
     python -m serve.app
 """
 import hmac
+import logging
 import re
 import sys
 import os
 
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 SRC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "src")
 if SRC_DIR not in sys.path:
@@ -54,10 +57,10 @@ from serve.whisper_model import get_whisper_model, transcribe_audio
 AI_API_KEY = os.getenv("AI_API_KEY", "").strip()
 
 if not AI_API_KEY and os.getenv("ENV", "").lower() == "production":
-    print("FATAL: AI_API_KEY is required in production. Exiting.")
+    logger.critical("AI_API_KEY is required in production. Exiting.")
     sys.exit(1)
 elif not AI_API_KEY:
-    print("[app] WARNING: AI_API_KEY not set — auth is disabled (dev mode)")
+    logger.warning("AI_API_KEY not set — auth is disabled (dev mode)")
 
 
 # ---------------------------------------------------------------
@@ -67,7 +70,7 @@ elif not AI_API_KEY:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Pre-load all models and warm up on startup."""
-    print("[app] Pre-loading models...")
+    logger.info("Pre-loading models...")
 
     face_det = _get_face_detector()
     clip_model = get_clip_deepfake_model()
@@ -75,38 +78,38 @@ async def lifespan(app: FastAPI):
     audio = get_audio_model()
 
     if not face_det:
-        print("[app] WARNING: Face detector failed to load")
+        logger.warning("Face detector failed to load")
     if not clip_model:
-        print("[app] WARNING: CLIP deepfake model failed to load")
+        logger.warning("CLIP deepfake model failed to load")
     if not emotion:
-        print("[app] WARNING: Emotion model failed to load")
+        logger.warning("Emotion model failed to load")
     if not audio:
-        print("[app] WARNING: WavLM audio model failed to load")
+        logger.warning("WavLM audio model failed to load")
 
     text_pipe = get_text_analyzer()
     if not text_pipe:
-        print("[app] WARNING: DeBERTa text analyzer failed to load")
+        logger.warning("DeBERTa text analyzer failed to load")
 
     whisper_model = get_whisper_model()
     if not whisper_model:
-        print("[app] WARNING: Whisper transcription model failed to load")
+        logger.warning("Whisper transcription model failed to load")
 
-    print("[app] Running warmup inference...")
+    logger.info("Running warmup inference...")
     try:
         dummy_img = np.zeros((256, 256, 3), dtype=np.uint8)
         if face_det is not None:
             import mediapipe as mp
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(dummy_img, cv2.COLOR_BGR2RGB))
             face_det.detect(mp_image)
-        print("[app] Warmup complete.")
+        logger.info("Warmup complete.")
     except Exception as e:
-        print(f"[app] Warmup failed (non-fatal): {e}")
+        logger.warning("Warmup failed (non-fatal): %s", e)
 
-    print("[app] All models ready.")
+    logger.info("All models ready.")
     yield
     from .inference import _inference_pool
     _inference_pool.shutdown(wait=False)
-    print("[app] Inference thread pool shut down.")
+    logger.info("Inference thread pool shut down.")
 
 
 # ---------------------------------------------------------------
@@ -239,7 +242,7 @@ async def analyze_frame_endpoint(request: Request, payload: AnalyzeFrameRequest)
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Frame analysis timed out")
     except Exception as e:
-        print(f"[app] Frame analysis failed: {e}")
+        logger.error("Frame analysis failed: %s", e)
         raise HTTPException(status_code=500, detail="Analysis failed — see server logs")
     finally:
         if acquired:
@@ -271,7 +274,7 @@ async def analyze_audio_endpoint(request: Request, payload: AnalyzeAudioRequest)
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Audio analysis timed out")
     except Exception as e:
-        print(f"[app] Audio analysis failed: {e}")
+        logger.error("Audio analysis failed: %s", e)
         raise HTTPException(status_code=500, detail="Audio analysis failed — see server logs")
 
 
@@ -309,7 +312,7 @@ async def analyze_text_endpoint(request: Request, payload: AnalyzeTextRequest):
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Text analysis timed out")
     except Exception as e:
-        print(f"[app] Text analysis failed: {e}")
+        logger.error("Text analysis failed: %s", e)
         raise HTTPException(status_code=500, detail="Text analysis failed — see server logs")
 
 
@@ -337,7 +340,7 @@ async def transcribe_endpoint(request: Request, payload: TranscribeRequest):
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Transcription timed out")
     except Exception as e:
-        print(f"[app] Transcription failed: {e}")
+        logger.error("Transcription failed: %s", e)
         raise HTTPException(status_code=500, detail="Transcription failed — see server logs")
 
 

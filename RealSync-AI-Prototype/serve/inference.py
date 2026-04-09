@@ -4,6 +4,7 @@ Per-frame inference pipeline for the RealSync AI Inference Service.
 Takes a single JPEG frame, detects faces, runs CLIP deepfake detection
 + emotion analysis, feeds scores to SPRT accumulator and temporal analyzer.
 """
+import logging
 import sys
 import os
 import base64
@@ -16,6 +17,8 @@ from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow_iso() -> str:
@@ -42,6 +45,7 @@ from serve.config import (
     ENSEMBLE_WEIGHT_CLIP,
     ENSEMBLE_WEIGHT_FREQUENCY,
     ENSEMBLE_WEIGHT_BOUNDARY,
+    SESSION_TTL_SECONDS,
 )
 from serve.temporal_analyzer import TemporalAnalyzer
 from serve.emotion_model import predict_emotion, get_emotion_model
@@ -60,6 +64,7 @@ _temporal_analyzer = TemporalAnalyzer(window_size=TEMPORAL_WINDOW_SIZE)
 _sprt = SPRTDetector()
 
 _no_face_counters: Dict[str, int] = {}
+_last_seen: Dict[str, float] = {}
 _thread_local = threading.local()
 _no_face_lock = threading.Lock()
 
@@ -86,10 +91,10 @@ def _get_face_detector():
         )
         detector = vision.FaceDetector.create_from_options(options)
         _thread_local.face_detector = detector
-        print("[inference] MediaPipe face detector loaded (Tasks API, thread-local)")
+        logger.info("MediaPipe face detector loaded (Tasks API, thread-local)")
     except Exception as e:
         _thread_local.face_detector = False
-        print(f"[inference] Failed to load MediaPipe face detector: {e}")
+        logger.error("Failed to load MediaPipe face detector: %s", e)
     return getattr(_thread_local, "face_detector", None) or None
 
 
@@ -97,9 +102,21 @@ def get_temporal_analyzer() -> TemporalAnalyzer:
     return _temporal_analyzer
 
 
+def _evict_stale_sessions():
+    """Remove sessions not seen in SESSION_TTL_SECONDS (60 min) from all state stores."""
+    now = time.time()
+    stale = [sid for sid, ts in _last_seen.items() if now - ts > SESSION_TTL_SECONDS]
+    for sid in stale:
+        _no_face_counters.pop(sid, None)
+        _last_seen.pop(sid, None)
+        _sprt.clear_session(sid)
+        _temporal_analyzer.clear_session(sid)
+
+
 def cleanup_session(session_id: str):
     with _no_face_lock:
         _no_face_counters.pop(session_id, None)
+        _last_seen.pop(session_id, None)
     _temporal_analyzer.clear_session(session_id)
     _sprt.clear_session(session_id)
 
@@ -112,7 +129,7 @@ def decode_frame(frame_b64: str) -> Optional[np.ndarray]:
     """Decode a base64-encoded image (JPEG or PNG) into a BGR numpy array."""
     try:
         if len(frame_b64) > 10 * 1024 * 1024:  # 10MB limit for PNG frames
-            print("[inference] Frame rejected: payload exceeds 10MB limit")
+            logger.warning("Frame rejected: payload exceeds 10MB limit")
             return None
         img_bytes = base64.b64decode(frame_b64, validate=True)
         nparr = np.frombuffer(img_bytes, np.uint8)
@@ -120,11 +137,11 @@ def decode_frame(frame_b64: str) -> Optional[np.ndarray]:
         if img is not None:
             h, w = img.shape[:2]
             if h > 4096 or w > 4096 or h < 10 or w < 10:
-                print(f"[inference] Frame rejected: dimensions {w}x{h} out of range")
+                logger.warning("Frame rejected: dimensions %dx%d out of range", w, h)
                 return None
         return img
     except Exception as e:
-        print(f"[inference] Failed to decode frame: {e}")
+        logger.error("Failed to decode frame: %s", e)
         return None
 
 
@@ -196,8 +213,10 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
     5. Temporal smoothing
     6. Return response
     """
-    if len(_no_face_counters) > 100:
-        _no_face_counters.clear()
+    # TTL-based eviction: remove sessions not seen in 60 minutes
+    with _no_face_lock:
+        _last_seen[session_id] = time.time()
+        _evict_stale_sessions()
 
     if not session_id or len(session_id) > 64 or not re.match(r'^[a-zA-Z0-9_-]+$', session_id):
         return _empty_response('invalid', captured_at)
@@ -243,22 +262,22 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
         try:
             clip_result = clip_future.result(timeout=INFERENCE_TIMEOUT_S)
         except FuturesTimeoutError:
-            print(f"[inference] CLIP model timed out for session {session_id}")
+            logger.warning("CLIP model timed out for session %s", session_id)
 
         try:
             emotion_result = emo_future.result(timeout=INFERENCE_TIMEOUT_S)
         except FuturesTimeoutError:
-            print(f"[inference] Emotion model timed out for session {session_id}")
+            logger.warning("Emotion model timed out for session %s", session_id)
 
         try:
             freq_result = freq_future.result(timeout=10)
         except (FuturesTimeoutError, Exception) as e:
-            print(f"[inference] Frequency analyzer failed for session {session_id}: {e}")
+            logger.warning("Frequency analyzer failed for session %s: %s", session_id, e)
 
         try:
             boundary_result = boundary_future.result(timeout=10)
         except (FuturesTimeoutError, Exception) as e:
-            print(f"[inference] Boundary analyzer failed for session {session_id}: {e}")
+            logger.warning("Boundary analyzer failed for session %s: %s", session_id, e)
 
         # Ensemble: weighted combination of all three detectors
         clip_score = clip_result.get("authenticityScore")
@@ -272,17 +291,21 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
                 eff_clip_w = 0.65
                 eff_freq_w = 0.15
                 eff_bnd_w = ENSEMBLE_WEIGHT_BOUNDARY  # 0.20 stays
-                ensemble_score = round(
-                    eff_clip_w * clip_score + eff_freq_w * freq_score + eff_bnd_w * boundary_score,
-                    4,
-                )
             else:
-                ensemble_score = round(
-                    ENSEMBLE_WEIGHT_CLIP * clip_score
-                    + ENSEMBLE_WEIGHT_FREQUENCY * freq_score
-                    + ENSEMBLE_WEIGHT_BOUNDARY * boundary_score,
-                    4,
-                )
+                eff_clip_w = ENSEMBLE_WEIGHT_CLIP
+                eff_freq_w = ENSEMBLE_WEIGHT_FREQUENCY
+                eff_bnd_w = ENSEMBLE_WEIGHT_BOUNDARY
+
+            # Normalize weights to sum to 1.0 (guards against config drift)
+            total_w = eff_clip_w + eff_freq_w + eff_bnd_w
+            eff_clip_w /= total_w
+            eff_freq_w /= total_w
+            eff_bnd_w /= total_w
+
+            ensemble_score = round(
+                eff_clip_w * clip_score + eff_freq_w * freq_score + eff_bnd_w * boundary_score,
+                4,
+            )
             # Determine risk level from ensemble score
             if ensemble_score > 0.70:
                 ensemble_risk = "low"
@@ -347,7 +370,7 @@ def analyze_frame(session_id: str, frame_b64: str, captured_at: Optional[str] = 
 
     processed_at = _utcnow_iso()
     elapsed_ms = round((time.time() - start_time) * 1000, 1)
-    print(f"[inference] Frame analyzed in {elapsed_ms}ms — {len(faces)} face(s), SPRT: {sprt_result['decision']}")
+    logger.info("Frame analyzed in %sms — %d face(s), SPRT: %s", elapsed_ms, len(faces), sprt_result['decision'])
 
     return {
         "sessionId": session_id,

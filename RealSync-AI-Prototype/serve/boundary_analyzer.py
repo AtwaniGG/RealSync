@@ -6,8 +6,12 @@ face region and the boundary/outer region. Real faces have consistent noise
 patterns throughout; swapped faces show texture discontinuities where the
 pasted region meets the original skin.
 """
+import logging
+
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def analyze_boundary(face_crop_bgr: np.ndarray) -> dict:
@@ -138,7 +142,7 @@ def analyze_boundary(face_crop_bgr: np.ndarray) -> dict:
         }
 
     except Exception as e:
-        print(f"[boundary_analyzer] Error: {e}")
+        logger.error("Error: %s", e)
         return _default_result()
 
 

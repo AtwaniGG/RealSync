@@ -7,6 +7,7 @@ import { EASE, LABEL_STYLE } from '../lib/tokens'
 import { useSessionContext } from '../contexts/SessionContext'
 import { supabase } from '../lib/supabaseClient'
 import { authFetch } from '../lib/api'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 // ─── Shared sub-components ────────────────────────────────────────────────────
 
@@ -676,7 +677,7 @@ function TabContent({ tab }: { tab: TabId }) {
 }
 
 export default function Settings() {
-  const isMobile = window.innerWidth <= 768
+  const isMobile = useIsMobile()
   const [tab, setTab] = useState<TabId>('general')
 
   if (isMobile) {

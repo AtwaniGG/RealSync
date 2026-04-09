@@ -9,6 +9,7 @@ Input: base64-encoded PCM16 mono 16kHz audio (4 seconds = 64000 samples).
 Output: {"authenticityScore": float, "riskLevel": str, "model": str}
 """
 import base64
+import logging
 import math
 import os
 import threading
@@ -16,6 +17,8 @@ import threading
 import numpy as np
 import torch
 import torch.nn as nn
+
+logger = logging.getLogger(__name__)
 
 from serve.config import (
     WAVLM_WEIGHTS_PATH,
@@ -104,16 +107,16 @@ def get_audio_model():
                 # since Phase 2 fine-tuning modifies the encoder
                 if "model_state_dict" in state:
                     net.load_state_dict(state["model_state_dict"], strict=False)
-                    print(f"[audio] Loaded full model (encoder + classifier) from {WAVLM_WEIGHTS_PATH}")
+                    logger.info("Loaded full model (encoder + classifier) from %s", WAVLM_WEIGHTS_PATH)
                 elif "classifier_state_dict" in state:
                     net.classifier.load_state_dict(state["classifier_state_dict"])
-                    print(f"[audio] Loaded classifier head only from {WAVLM_WEIGHTS_PATH}")
+                    logger.info("Loaded classifier head only from %s", WAVLM_WEIGHTS_PATH)
                 else:
                     net.load_state_dict(state, strict=False)
-                    print(f"[audio] Loaded raw state dict from {WAVLM_WEIGHTS_PATH}")
+                    logger.info("Loaded raw state dict from %s", WAVLM_WEIGHTS_PATH)
             else:
-                print(f"[audio] WARNING: WavLM weights not found at {WAVLM_WEIGHTS_PATH}")
-                print("[audio] Model disabled — no trained classification head available")
+                logger.warning("WavLM weights not found at %s", WAVLM_WEIGHTS_PATH)
+                logger.warning("Model disabled — no trained classification head available")
                 _model = _LOAD_FAILED
                 return None
 
@@ -124,10 +127,10 @@ def get_audio_model():
             net = net.to(_device)
             net._device = _device
             _model = net
-            print(f"[audio] Using device: {_device}")
-            print(f"[audio] {MODEL_NAME} model ready on {_device}")
+            logger.info("Using device: %s", _device)
+            logger.info("%s model ready on %s", MODEL_NAME, _device)
         except Exception as exc:
-            print(f"[audio] Failed to load audio model: {exc}")
+            logger.error("Failed to load audio model: %s", exc)
             _model = _LOAD_FAILED
     return None if _model is _LOAD_FAILED else _model
 
@@ -150,7 +153,7 @@ def predict_audio(audio_b64: str) -> dict:
     try:
         pcm_bytes = base64.b64decode(audio_b64, validate=True)
         if len(pcm_bytes) % 2 != 0:
-            print(f"[audio] Rejecting odd-byte PCM payload ({len(pcm_bytes)} bytes)")
+            logger.warning("Rejecting odd-byte PCM payload (%d bytes)", len(pcm_bytes))
             return {"authenticityScore": None, "riskLevel": "unknown", "model": MODEL_NAME, "available": False}
         pcm_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
         waveform = pcm_int16.astype(np.float32) / 32768.0
@@ -180,7 +183,7 @@ def predict_audio(audio_b64: str) -> dict:
         authenticity = 1.0 / (1.0 + math.exp(0.1 * (logit - 35.0)))
         authenticity = round(max(0.0, min(1.0, authenticity)), 4)
 
-        print(f"[audio] raw_logit={logit:.2f} authenticity={authenticity:.4f}")
+        logger.debug("raw_logit=%.2f authenticity=%.4f", logit, authenticity)
 
         if authenticity > AUDIO_AUTH_THRESHOLD_LOW_RISK:
             risk = "low"
@@ -196,5 +199,5 @@ def predict_audio(audio_b64: str) -> dict:
         }
 
     except Exception as exc:
-        print(f"[audio] Prediction error: {exc}")
+        logger.error("Prediction error: %s", exc)
         return {"authenticityScore": None, "riskLevel": "unknown", "model": MODEL_NAME, "available": False}

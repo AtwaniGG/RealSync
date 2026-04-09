@@ -59,7 +59,6 @@ class TemporalAnalyzer:
             frame_result: Dict with keys:
                 - trustScore: float (0-1)
                 - authenticityScore: float (0-1)
-                - embeddingShift: float (0-1)
                 - emotionLabel: str
 
         Returns:

@@ -9,6 +9,7 @@ Model: yermandy/deepfake-detection (WACV 2026, MIT license)
 Input: BGR face crop (any size, resized to 224x224)
 Output: {"authenticityScore": float, "riskLevel": str, "model": str}
 """
+import logging
 import threading
 
 import cv2
@@ -16,6 +17,8 @@ import numpy as np
 import torch
 from PIL import Image
 from torchvision import transforms
+
+logger = logging.getLogger(__name__)
 
 from serve.config import (
     DEEPFAKE_AUTH_THRESHOLD_HIGH_RISK,
@@ -51,7 +54,7 @@ def get_clip_deepfake_model():
         try:
             from huggingface_hub import hf_hub_download
 
-            print(f"[clip-deepfake] Downloading GenD CLIP ViT-L/14 from HuggingFace...")
+            logger.info("Downloading GenD CLIP ViT-L/14 from HuggingFace...")
             model_path = hf_hub_download(
                 repo_id="yermandy/deepfake-detection",
                 filename="model.torchscript",
@@ -68,10 +71,10 @@ def get_clip_deepfake_model():
             net._device = _device
             _model = net
 
-            print(f"[clip-deepfake] {MODEL_NAME} loaded on {_device}")
-            print(f"[clip-deepfake] Model ready")
+            logger.info("%s loaded on %s", MODEL_NAME, _device)
+            logger.info("Model ready")
         except Exception as exc:
-            print(f"[clip-deepfake] Failed to load: {exc}")
+            logger.error("Failed to load: %s", exc)
             _model = _LOAD_FAILED
 
     return None if _model is _LOAD_FAILED else _model
@@ -129,7 +132,7 @@ def predict_clip_deepfake(face_crop_bgr: np.ndarray) -> dict:
         }
 
     except Exception as exc:
-        print(f"[clip-deepfake] Prediction error: {exc}")
+        logger.error("Prediction error: %s", exc)
         return {
             "authenticityScore": None,
             "riskLevel": "unknown",

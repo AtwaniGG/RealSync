@@ -53,6 +53,7 @@ function processAudioChunk(session, dataB64) {
   session.stt.write(audioBuffer);
 
   // Accumulate audio for AI deepfake analysis (H3: cap buffer at 128 chunks)
+  if (!session.audioAnalysisBuffer) session.audioAnalysisBuffer = [];
   session.audioAnalysisBuffer.push(dataB64);
   if (session.audioAnalysisBuffer.length > MAX_AUDIO_BUFFER_CHUNKS) session.audioAnalysisBuffer.shift();
 
@@ -84,13 +85,6 @@ function processAudioChunk(session, dataB64) {
     session.audioHasSignal = true;
     session.audioAnalysisInFlight = true;
     session.lastAudioAnalysisAt = now;
-
-    // Only analyze if audio has actual signal (not silence from virtual sink)
-    if (!hasAudioSignal(combinedAudioB64)) {
-      session.audioAnalysisInFlight = false;
-      return;
-    }
-    session.audioHasSignal = true;
 
     analyzeAudio({ sessionId: session.id, audioB64: combinedAudioB64, durationMs: 4000 })
       .then((res) => {

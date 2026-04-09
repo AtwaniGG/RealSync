@@ -9,6 +9,7 @@ import $ from '../lib/tokens'
 import { EASE, LABEL_STYLE, MONO_STYLE } from '../lib/tokens'
 import { authFetch } from '../lib/api'
 import { useSessionContext } from '../contexts/SessionContext'
+import { useIsMobile } from '../hooks/useIsMobile'
 
 type SessionType = 'official' | 'business' | 'friends'
 
@@ -309,7 +310,7 @@ function NewSessionModal({ open, onClose, onCreate }: {
   onClose: () => void
   onCreate: (s: { title: string; type: SessionType; meetingUrl?: string }) => Promise<void>
 }) {
-  const isMobile = window.innerWidth <= 768
+  const isMobile = useIsMobile()
   const [name, setName] = useState('')
   const [type, setType] = useState<SessionType>('business')
   const [url, setUrl] = useState('')
@@ -520,7 +521,7 @@ function ThCell({ children, width }: { children: React.ReactNode; width?: string
 }
 
 export default function Sessions() {
-  const isMobile = window.innerWidth <= 768
+  const isMobile = useIsMobile()
   const navigate = useNavigate()
   const { handleStartSession, handleEndSession, activeSession } = useSessionContext()
 

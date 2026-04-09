@@ -5,9 +5,12 @@ Transcribes PCM16 mono 16kHz audio (base64-encoded) using OpenAI Whisper.
 """
 
 import base64
+import logging
 import threading
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 _model = None
 _LOAD_FAILED = object()
@@ -25,9 +28,9 @@ def get_whisper_model():
         try:
             import whisper
             _model = whisper.load_model("base")
-            print("[whisper] Whisper base model loaded")
+            logger.info("Whisper base model loaded")
         except Exception as e:
-            print(f"[whisper] Failed to load Whisper model: {e}")
+            logger.error("Failed to load Whisper model: %s", e)
             _model = _LOAD_FAILED
     return None if _model is _LOAD_FAILED else _model
 
@@ -58,5 +61,5 @@ def transcribe_audio(audio_b64: str) -> dict:
 
         return {"text": text, "language": language}
     except Exception as e:
-        print(f"[whisper] Transcription failed: {e}")
+        logger.error("Transcription failed: %s", e)
         return {"text": "", "language": "unknown"}

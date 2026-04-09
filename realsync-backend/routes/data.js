@@ -1,6 +1,6 @@
 const { Router } = require("express");
 const rateLimit = require("express-rate-limit");
-const { requireSessionOwner } = require("../lib/auth");
+const { requireSessionOwner, validateSessionId } = require("../lib/auth");
 const persistence = require("../lib/persistence");
 const { getSession, rehydrateSession, makeIso } = require("../services/sessionManager");
 
@@ -68,7 +68,7 @@ async function requireReportAccess(req, res, next) {
 /*  GET /api/sessions/:id/alerts                                       */
 /* ------------------------------------------------------------------ */
 
-router.get("/api/sessions/:id/alerts", requireReportAccess, async (req, res) => {
+router.get("/api/sessions/:id/alerts", validateSessionId, requireReportAccess, async (req, res) => {
   const sessionId = req.params.id;
   const session = getSession(sessionId);
 
@@ -88,7 +88,7 @@ router.get("/api/sessions/:id/alerts", requireReportAccess, async (req, res) => 
 /*  GET /api/sessions/:id/transcript                                   */
 /* ------------------------------------------------------------------ */
 
-router.get("/api/sessions/:id/transcript", requireReportAccess, async (req, res) => {
+router.get("/api/sessions/:id/transcript", validateSessionId, requireReportAccess, async (req, res) => {
   const sessionId = req.params.id;
   const session = getSession(sessionId);
 
@@ -106,7 +106,7 @@ router.get("/api/sessions/:id/transcript", requireReportAccess, async (req, res)
 /*  GET /api/sessions/:id/report                                       */
 /* ------------------------------------------------------------------ */
 
-router.get("/api/sessions/:id/report", requireReportAccess, async (req, res) => {
+router.get("/api/sessions/:id/report", validateSessionId, requireReportAccess, async (req, res) => {
   const sessionId = req.params.id;
   const session = getSession(sessionId);
 

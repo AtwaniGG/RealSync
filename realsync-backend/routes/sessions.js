@@ -1,7 +1,7 @@
 const { Router } = require("express");
 const rateLimit = require("express-rate-limit");
 const { MEETING_TYPES } = require("../lib/suggestions");
-const { requireSessionOwner } = require("../lib/auth");
+const { requireSessionOwner, validateSessionId } = require("../lib/auth");
 const persistence = require("../lib/persistence");
 const log = require("../lib/logger");
 const botManager = require("../bot/botManager");
@@ -154,7 +154,7 @@ router.get("/api/sessions", async (req, res) => {
 /*  GET /api/sessions/:id/metrics                                      */
 /* ------------------------------------------------------------------ */
 
-router.get("/api/sessions/:id/metrics", requireSessionOwner(getSession, rehydrateSession), (req, res) => {
+router.get("/api/sessions/:id/metrics", validateSessionId, requireSessionOwner(getSession, rehydrateSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "not found" });
   return res.json(session.metrics);
@@ -164,7 +164,7 @@ router.get("/api/sessions/:id/metrics", requireSessionOwner(getSession, rehydrat
 /*  POST /api/sessions/:id/metrics                                     */
 /* ------------------------------------------------------------------ */
 
-router.post("/api/sessions/:id/metrics", requireSessionOwner(getSession, rehydrateSession), (req, res) => {
+router.post("/api/sessions/:id/metrics", validateSessionId, requireSessionOwner(getSession, rehydrateSession), (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "not found" });
   if (session.endedAt) return res.status(410).json({ error: "Session has ended" });
@@ -197,7 +197,7 @@ router.post("/api/sessions/:id/metrics", requireSessionOwner(getSession, rehydra
 /*  POST /api/sessions/:id/stop                                        */
 /* ------------------------------------------------------------------ */
 
-router.post("/api/sessions/:id/stop", requireSessionOwner(getSession, rehydrateSession), async (req, res) => {
+router.post("/api/sessions/:id/stop", validateSessionId, requireSessionOwner(getSession, rehydrateSession), async (req, res) => {
   const session = getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "not found" });
 

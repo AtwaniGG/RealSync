@@ -1453,7 +1453,7 @@ class ZoomBotAdapter {
         this.onIngestMessage({
           type: "participants",
           names: filtered,
-          participants: names.map((name) => ({ name })),
+          participants: filtered.map((name) => ({ name })),
           ts: new Date().toISOString(),
         });
       } catch (err) {

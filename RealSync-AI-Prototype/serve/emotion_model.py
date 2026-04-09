@@ -10,6 +10,7 @@ Falls back gracefully if weights not found.
 7-class: angry, disgust, fear, happy, sad, surprise, neutral
 Mapped to 6-class API: disgust → angry (existing convention).
 """
+import logging
 import os
 import threading
 
@@ -18,6 +19,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torchvision import models, transforms
+
+logger = logging.getLogger(__name__)
 
 from serve.config import EMOTION_LABELS, EMOTION_INPUT_SIZE, EMOTION_WEIGHTS_PATH
 
@@ -103,7 +106,7 @@ def get_emotion_model():
         try:
             if not os.path.isfile(EMOTION_WEIGHTS_PATH):
                 _model = _LOAD_FAILED
-                print("[emotion] DISABLED: weights not found at " + EMOTION_WEIGHTS_PATH)
+                logger.warning("DISABLED: weights not found at %s", EMOTION_WEIGHTS_PATH)
                 return None
 
             checkpoint = torch.load(EMOTION_WEIGHTS_PATH, map_location="cpu", weights_only=True)
@@ -122,10 +125,10 @@ def get_emotion_model():
             net._device = _device
             _preprocess = _build_preprocess(img_size)
             _model = net  # Publish model AFTER _preprocess is set (ordering matters for readers outside lock)
-            print("[emotion] Loaded " + backbone_name + " on " + _device + " (" + str(img_size) + "x" + str(img_size) + ")")
-            print("[emotion] Emotion model ready")
+            logger.info("Loaded %s on %s (%dx%d)", backbone_name, _device, img_size, img_size)
+            logger.info("Emotion model ready")
         except Exception as e:
-            print("[emotion] Failed to load emotion model: " + str(e))
+            logger.error("Failed to load emotion model: %s", e)
             _model = _LOAD_FAILED  # #20: Cache failure to prevent retry on every request
     return None if _model is _LOAD_FAILED else _model
 
@@ -194,7 +197,7 @@ def predict_emotion(face_crop_bgr: np.ndarray) -> dict:
         # cv2.error: invalid/corrupt image data passed to cvtColor
         # ValueError: unexpected tensor shape from preprocessing
         # RuntimeError: PyTorch inference failure (e.g. device mismatch)
-        print(f"[emotion] Prediction error: {exc}")
+        logger.error("Prediction error: %s", exc)
         return {
             "label": "Neutral",
             "confidence": 0.0,

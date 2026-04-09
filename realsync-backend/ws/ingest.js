@@ -355,11 +355,6 @@ function attachIngestHandler(wssIngest) {
       }
     });
 
-    socket.on("close", () => {
-      // If client disconnects, keep session alive; stop STT stream to avoid leaks.
-      session.stt?.end?.();
-      session.stt = null;
-    });
   });
 }
 

@@ -13,6 +13,7 @@ import { EASE, LABEL_STYLE, MONO_STYLE, trustColor, SEVERITY_CONFIG } from '../l
 import type { AlertSeverity } from '../lib/mockData'
 import { authFetch } from '../lib/api'
 import { useSessionContext } from '../contexts/SessionContext'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { generateReportReactPdf } from '../lib/generateReportReactPdf'
 
 interface TrustPoint { t: string; score: number }
@@ -171,7 +172,7 @@ function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: 
 }
 
 function ReportDetail({ report }: { report: ReportData }) {
-  const isMobile = window.innerWidth <= 768
+  const isMobile = useIsMobile()
   const trustCol = trustColor(report.trustAvg)
   const yMin = report.trustCurve.length > 0 ? Math.max(60, Math.min(...report.trustCurve.map((p) => p.score)) - 5) : 60
 
@@ -438,7 +439,7 @@ function apiToReport(
 }
 
 export default function Reports() {
-  const isMobile = window.innerWidth <= 768
+  const isMobile = useIsMobile()
   const { activeSession } = useSessionContext()
   const location = useLocation()
   const incomingSessionId = (location.state as { sessionId?: string } | null)?.sessionId ?? ''

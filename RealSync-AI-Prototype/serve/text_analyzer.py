@@ -9,8 +9,11 @@ No training data needed -- the model generalizes via natural language inference.
 Input: transcript text (60s window, truncated to ~2000 chars).
 Output: {"signals": [...], "highestScore": float, "model": str}
 """
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+logger = logging.getLogger(__name__)
 
 from serve.config import (
     TEXT_ALERT_THRESHOLD,
@@ -85,9 +88,9 @@ def get_text_analyzer():
                 model=MODEL_ID,
                 device=-1,  # CPU
             )
-            print(f"[text] {MODEL_NAME} pipeline loaded ({MODEL_ID})")
+            logger.info("%s pipeline loaded (%s)", MODEL_NAME, MODEL_ID)
         except Exception as exc:
-            print(f"[text] Failed to load text analyzer: {exc}")
+            logger.error("Failed to load text analyzer: %s", exc)
             _pipeline = _LOAD_FAILED
     return None if _pipeline is _LOAD_FAILED else _pipeline
 
@@ -129,7 +132,7 @@ def analyze_text(text: str) -> dict:
             # timed-out task will finish in the background; the next submission
             # still gets a free worker slot.
             future.cancel()
-            print(f"[text] Analysis timed out ({TEXT_INFERENCE_TIMEOUT}s)")
+            logger.warning("Analysis timed out (%ds)", TEXT_INFERENCE_TIMEOUT)
             return {"signals": [], "highestScore": 0.0, "model": MODEL_NAME}
 
         # Build signals list
@@ -168,5 +171,5 @@ def analyze_text(text: str) -> dict:
         }
 
     except Exception as exc:
-        print(f"[text] Analysis error: {exc}")
+        logger.error("Analysis error: %s", exc)
         return {"signals": [], "highestScore": 0.0, "model": MODEL_NAME, "available": False}
