@@ -599,7 +599,7 @@ export default function SignUp() {
                       onClick: async () => {
                         const { error: oauthError } = await supabase.auth.signInWithOAuth({
                           provider: 'google',
-                          options: { redirectTo: window.location.origin },
+                          options: { redirectTo: `${window.location.origin}/app` },
                         })
                         if (oauthError) setError(oauthError.message)
                       },
@@ -609,7 +609,7 @@ export default function SignUp() {
                       onClick: async () => {
                         const { error: oauthError } = await supabase.auth.signInWithOAuth({
                           provider: 'azure',
-                          options: { redirectTo: window.location.origin, scopes: 'email profile openid' },
+                          options: { redirectTo: `${window.location.origin}/app`, scopes: 'email profile openid' },
                         })
                         if (oauthError) setError(oauthError.message)
                       },

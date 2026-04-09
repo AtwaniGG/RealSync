@@ -149,7 +149,7 @@ export default function Login() {
     if (PROTOTYPE_MODE) { navigate('/'); return }
     const { error: oauthError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: window.location.origin },
+      options: { redirectTo: `${window.location.origin}/app` },
     })
     if (oauthError) setError(oauthError.message)
   }
@@ -159,7 +159,7 @@ export default function Login() {
     if (PROTOTYPE_MODE) { navigate('/'); return }
     const { error: oauthError } = await supabase.auth.signInWithOAuth({
       provider: 'azure',
-      options: { redirectTo: window.location.origin, scopes: 'email profile openid' },
+      options: { redirectTo: `${window.location.origin}/app`, scopes: 'email profile openid' },
     })
     if (oauthError) setError(oauthError.message)
   }
@@ -167,7 +167,7 @@ export default function Login() {
   async function handleForgotPassword() {
     if (!email.trim()) { setError('Enter your email first to reset password.'); return }
     const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: window.location.origin,
+      redirectTo: `${window.location.origin}/app`,
     })
     if (resetError) {
       setError(resetError.message)
