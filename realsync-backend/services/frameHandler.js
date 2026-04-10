@@ -12,6 +12,10 @@ const { broadcastToSession, makeIso } = require("./sessionManager");
 /** Throttle: max 1 frame analysis in-flight per session */
 const frameInFlight = new Map(); // sessionId → boolean
 
+/** EMA smoothing for visual scores — reduces frame-to-frame variance on 360p */
+const _smoothedVisual = new Map(); // sessionId → number
+const VISUAL_EMA_ALPHA = 0.25; // 25% new frame, 75% history — smooths 360p jitter
+
 const AUDIO_DEEPFAKE_ENABLED = process.env.AUDIO_DEEPFAKE_ENABLED !== "false";
 
 async function handleFrame(session, message) {
@@ -73,9 +77,20 @@ async function handleFrame(session, message) {
       return;
     }
 
+    // EMA smooth the visual deepfake score to reduce 360p frame-to-frame jitter.
+    // SPRT on RunPod still sees raw scores for detection accuracy.
+    const agg = { ...result.aggregated };
+    if (agg.deepfake && typeof agg.deepfake.authenticityScore === "number") {
+      const raw = agg.deepfake.authenticityScore;
+      const prev = _smoothedVisual.get(session.id) ?? raw;
+      const smoothed = VISUAL_EMA_ALPHA * raw + (1 - VISUAL_EMA_ALPHA) * prev;
+      _smoothedVisual.set(session.id, smoothed);
+      agg.deepfake = { ...agg.deepfake, authenticityScore: parseFloat(smoothed.toFixed(4)) };
+    }
+
     // Update session metrics from real AI response
     session.metrics = {
-      ...result.aggregated,
+      ...agg,
       timestamp: result.processedAt || makeIso(),
       source: "external",
       analyzedParticipant: primaryName,

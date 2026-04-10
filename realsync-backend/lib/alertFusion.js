@@ -15,8 +15,8 @@ const log = require("./logger");
 
 const THRESHOLDS = {
   deepfake: {
-    medium: 0.70, // authenticityScore <= this → medium risk
-    high: 0.40,   // authenticityScore <= this → high risk (real faces score ≥0.55 after calibration)
+    medium: 0.45, // authenticityScore <= this → medium risk (360p: real=0.50-0.82, fake=0.25-0.40)
+    high: 0.35,   // authenticityScore <= this → high risk (deepfakes consistently score <0.35)
   },
   emotion: {
     angerMedium: 0.80, // was 0.75

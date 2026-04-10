@@ -7,33 +7,40 @@ const log = require("../lib/logger");
 const MAX_AUDIO_BUFFER_CHUNKS = 128;
 const AUDIO_ANALYSIS_INTERVAL_MS = 3_000;
 const AUDIO_DEEPFAKE_ENABLED = process.env.AUDIO_DEEPFAKE_ENABLED !== "false";
-const RMS_SILENCE_THRESHOLD = 500; // PCM16 range -32768..32767; below this = silence
+// PCM16 range -32768..32767. Recall.ai per-participant audio peaks ~50-400 for speech,
+// 1-15 for silence. Old PulseAudio loopback was 10x louder (threshold was 500).
+const RMS_SILENCE_THRESHOLD = parseInt(process.env.RMS_SILENCE_THRESHOLD, 10) || 0;
 
-// Audio score decay: hold last score for 20s, then decay to 0 over 20s
-const _lastAudioScores = new Map(); // sessionId → { score: number, ts: number }
+// Audio EMA smoothing + extended hold: keep audio visible between analysis windows
+const _smoothedAudio = new Map(); // sessionId → { score: number, ts: number }
+const AUDIO_EMA_ALPHA = 0.3;
+const AUDIO_HOLD_S = 60;  // Hold score for 60s before decaying
+const AUDIO_DECAY_S = 30; // Decay to 0 over 30s after hold
 
 /**
- * Returns an effective audio authenticity score that smooths over silent periods.
- * If currentScore > 0.1: updates the held value and returns it directly.
- * Within 20 s of the last real score: returns the last held value unchanged.
- * Between 20–40 s: linearly decays the held value to 0.
- * After 40 s: evicts the entry and returns 0.
- *
- * @param {string} sessionId
- * @param {number} currentScore  Raw score from the AI pipeline (0–1).
- * @returns {number}
+ * Returns an effective audio authenticity score with EMA smoothing and hold/decay.
+ * New scores are EMA-smoothed with previous. Score holds for 60s then decays over 30s.
  */
 function getEffectiveAudioScore(sessionId, currentScore) {
-  if (currentScore > 0.1) {
-    _lastAudioScores.set(sessionId, { score: currentScore, ts: Date.now() });
-    return currentScore;
+  const now = Date.now();
+  const prev = _smoothedAudio.get(sessionId);
+
+  if (currentScore > 0.05) {
+    // EMA smooth with previous score
+    const smoothed = prev
+      ? AUDIO_EMA_ALPHA * currentScore + (1 - AUDIO_EMA_ALPHA) * prev.score
+      : currentScore;
+    _smoothedAudio.set(sessionId, { score: smoothed, ts: now });
+    return parseFloat(smoothed.toFixed(4));
   }
-  const last = _lastAudioScores.get(sessionId);
-  if (!last) return 0;
-  const elapsed = (Date.now() - last.ts) / 1000;
-  if (elapsed < 20) return last.score;
-  if (elapsed < 40) return Math.round(last.score * (1 - (elapsed - 20) / 20) * 100) / 100;
-  _lastAudioScores.delete(sessionId);
+
+  if (!prev) return 0;
+  const elapsed = (now - prev.ts) / 1000;
+  if (elapsed < AUDIO_HOLD_S) return prev.score;
+  if (elapsed < AUDIO_HOLD_S + AUDIO_DECAY_S) {
+    return parseFloat((prev.score * (1 - (elapsed - AUDIO_HOLD_S) / AUDIO_DECAY_S)).toFixed(4));
+  }
+  _smoothedAudio.delete(sessionId);
   return 0;
 }
 

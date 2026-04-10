@@ -10,12 +10,17 @@
 const { v4: uuidv4 } = require("uuid");
 const log = require("../lib/logger");
 
-let ZoomBotAdapter = null;
+let BotAdapter = null;
 try {
-  ZoomBotAdapter = require("./ZoomBotAdapter").ZoomBotAdapter;
-  log.info("botManager", "Puppeteer bot loaded");
+  if (process.env.BOT_ADAPTER === "recall") {
+    BotAdapter = require("./RecallBotAdapter").RecallBotAdapter;
+    log.info("botManager", "Recall.ai bot adapter loaded");
+  } else {
+    BotAdapter = require("./ZoomBotAdapter").ZoomBotAdapter;
+    log.info("botManager", "Puppeteer bot adapter loaded");
+  }
 } catch (err) {
-  log.error("botManager", `Failed to load ZoomBotAdapter: ${err.message}. Bot will not work.`);
+  log.error("botManager", `Failed to load bot adapter: ${err.message}. Bot will not work.`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -33,19 +38,19 @@ const JOIN_TIMEOUT_MS = 150_000;
 const MAX_JOIN_RETRIES = 2;
 
 function startRealBot({ sessionId, meetingUrl, displayName, onIngestMessage }) {
-  if (!ZoomBotAdapter) {
-    log.error("botManager", "ZoomBotAdapter not available. Cannot join meeting.");
+  if (!BotAdapter) {
+    log.error("botManager", "Bot adapter not available. Cannot join meeting.");
     onIngestMessage({
       type: "bot_fallback",
       reason: "adapter_missing",
-      message: "Bot adapter not available. Install Puppeteer dependencies and restart.",
+      message: "Bot adapter not available. Check BOT_ADAPTER env and restart.",
       ts: new Date().toISOString(),
     });
     return { botId: null, status: "error" };
   }
 
   const botId = uuidv4();
-  let adapter = new ZoomBotAdapter({ meetingUrl, displayName, onIngestMessage });
+  let adapter = new BotAdapter({ meetingUrl, displayName, onIngestMessage });
 
   const bot = {
     botId,
@@ -95,7 +100,7 @@ function startRealBot({ sessionId, meetingUrl, displayName, onIngestMessage }) {
           const backoffMs = 1000 * Math.pow(2, retryCount);
           log.info("botManager", `Retrying join for ${sessionId} in ${backoffMs}ms (retry ${retryCount + 1}/${MAX_JOIN_RETRIES})`);
           adapter.leave().catch(() => {});
-          bot.adapter = new ZoomBotAdapter({ meetingUrl, displayName, onIngestMessage });
+          bot.adapter = new BotAdapter({ meetingUrl, displayName, onIngestMessage });
           adapter = bot.adapter;
           bot.status = "joining";
           setTimeout(() => {

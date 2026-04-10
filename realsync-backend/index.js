@@ -20,6 +20,7 @@ const { sessions, broadcastToSession, makeIso } = require("./services/sessionMan
 const { frameInFlight } = require("./services/frameHandler");
 const { attachSubscribeHandler } = require("./ws/subscribe");
 const { attachIngestHandler } = require("./ws/ingest");
+const { attachRecallWsHandler } = require("./ws/recallWs");
 const healthRouter = require("./routes/health");
 const sessionsRouter = require("./routes/sessions");
 const botRouter = require("./routes/bot");
@@ -117,6 +118,7 @@ const PORT = process.env.PORT || 4000;
 const server = http.createServer(app);
 const wssSubscribe = new WebSocket.Server({ noServer: true, maxPayload: 256 * 1024 });
 const wssIngest = new WebSocket.Server({ noServer: true, maxPayload: 2 * 1024 * 1024 });
+const wssRecall = new WebSocket.Server({ noServer: true, maxPayload: 2 * 1024 * 1024 });
 
 // Manual upgrade routing: two WS servers on one HTTP server require noServer
 // mode so they don't race to abort each other's connections.
@@ -130,6 +132,10 @@ server.on("upgrade", (req, socket, head) => {
     wssIngest.handleUpgrade(req, socket, head, (ws) => {
       wssIngest.emit("connection", ws, req);
     });
+  } else if (pathname === "/ws/recall") {
+    wssRecall.handleUpgrade(req, socket, head, (ws) => {
+      wssRecall.emit("connection", ws, req);
+    });
   } else {
     socket.destroy();
   }
@@ -138,6 +144,7 @@ server.on("upgrade", (req, socket, head) => {
 // Attach WebSocket connection handlers
 attachSubscribeHandler(wssSubscribe);
 attachIngestHandler(wssIngest);
+attachRecallWsHandler(wssRecall);
 
 /* ------------------------------------------------------------------ */
 /*  Simulated metrics broadcast loop                                    */
