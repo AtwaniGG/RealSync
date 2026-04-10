@@ -1135,58 +1135,113 @@ class ZoomBotAdapter {
     try {
       await this._revealToolbar();
 
-      // Click the "View" button in Zoom's toolbar
-      const viewButton = await this.page.$(
-        [
-          'button[aria-label*="view" i]',
-          'button[aria-label="View"]',
-        ].join(", ")
-      );
+      // Try multiple strategies to switch to Speaker View
+      // Strategy 1 (primary): Click "More" button → find Speaker/View in submenu
+      // Strategy 2 (fallback): Click "View" button if it exists as standalone
 
-      if (!viewButton) {
-        // Fallback: find by button text
-        const found = await this.page.evaluate(() => {
-          const buttons = Array.from(document.querySelectorAll("button"));
-          for (const btn of buttons) {
-            if (btn.textContent?.trim().toLowerCase() === "view") {
-              btn.click();
-              return true;
-            }
-          }
-          return false;
-        });
-        if (!found) {
-          log.info("zoomBot", "Speaker view: View button not found — skipping.");
-          return;
-        }
-      } else {
-        try {
-          await viewButton.click();
-        } catch {
-          // Puppeteer click failed — use JS click instead
-          await viewButton.evaluate((btn) => btn.click());
-        }
-      }
-
-      // Wait for dropdown to open
-      await sleep(500);
-
-      // Click "Speaker" from the dropdown menu items
-      const clicked = await this.page.evaluate(() => {
-        const items = Array.from(document.querySelectorAll(
-          '[role="menuitem"], [role="option"], li, button'
-        ));
-        for (const item of items) {
-          const text = (item.textContent || "").trim().toLowerCase();
-          if (text === "speaker" || text.startsWith("speaker view")) {
-            item.click();
+      // Strategy 1: Click "More" (always present in Zoom web client toolbar)
+      const moreClicked = await this.page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll("button"));
+        for (const btn of buttons) {
+          const text = (btn.textContent?.trim() || "").toLowerCase();
+          if (text === "more" || text === "more options") {
+            btn.click();
             return true;
           }
         }
         return false;
       });
 
-      // Wait for view to switch
+      if (moreClicked) {
+        log.info("zoomBot", "Clicked More button to find Speaker View.");
+        await sleep(800);
+
+        // Look for Speaker View or View submenu in the More dropdown
+        const menuResult = await this.page.evaluate(() => {
+          const items = Array.from(document.querySelectorAll(
+            '[role="menuitem"], [role="option"], li, a, button, span, div[class*="menu-item"]'
+          ));
+          for (const item of items) {
+            const text = (item.textContent || "").trim().toLowerCase();
+            if (text === "speaker" || text === "speaker view" || text.includes("speaker view") || text.includes("speaker layout")) {
+              item.click();
+              return "speaker";
+            }
+          }
+          // Check for a "View" submenu inside More
+          for (const item of items) {
+            const text = (item.textContent || "").trim().toLowerCase();
+            if (text === "view" || text === "layout" || text === "change layout") {
+              item.click();
+              return "submenu";
+            }
+          }
+          return null;
+        });
+
+        if (menuResult === "speaker") {
+          log.info("zoomBot", "Clicked Speaker View directly from More menu.");
+        } else if (menuResult === "submenu") {
+          log.info("zoomBot", "Opened View submenu from More — looking for Speaker View...");
+          await sleep(500);
+          const subClicked = await this.page.evaluate(() => {
+            const items = Array.from(document.querySelectorAll(
+              '[role="menuitem"], [role="option"], li, a, button, span'
+            ));
+            for (const item of items) {
+              const text = (item.textContent || "").trim().toLowerCase();
+              if (text === "speaker" || text === "speaker view" || text.includes("speaker")) {
+                item.click();
+                return true;
+              }
+            }
+            return false;
+          });
+          if (subClicked) log.info("zoomBot", "Clicked Speaker View in submenu.");
+        } else {
+          log.info("zoomBot", "Speaker View not found in More menu.");
+          // Close the menu
+          await this.page.mouse.click(960, 540);
+        }
+      } else {
+        // Strategy 2 (fallback): Direct "View" button (Zoom desktop-style)
+        const viewClicked = await this.page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll("button"));
+          for (const btn of buttons) {
+            const text = (btn.textContent?.trim() || "").toLowerCase();
+            const label = (btn.getAttribute("aria-label") || "").toLowerCase();
+            if (text === "view" || label === "view") {
+              btn.click();
+              return true;
+            }
+          }
+          return false;
+        });
+
+        if (viewClicked) {
+          log.info("zoomBot", "Clicked View button (fallback strategy).");
+          await sleep(500);
+          const clicked = await this.page.evaluate(() => {
+            const items = Array.from(document.querySelectorAll(
+              '[role="menuitem"], [role="option"], li, button'
+            ));
+            for (const item of items) {
+              const text = (item.textContent || "").trim().toLowerCase();
+              if (text === "speaker" || text.startsWith("speaker view")) {
+                item.click();
+                return true;
+              }
+            }
+            return false;
+          });
+        } else {
+          log.info("zoomBot", "Speaker View: neither More nor View button found — skipping.");
+          return;
+        }
+      }
+
+      // Close any open menu
+      await this.page.mouse.click(960, 540);
       await sleep(1000);
 
       // Verify: speaker-active-container should now exist
@@ -1194,12 +1249,10 @@ class ZoomBotAdapter {
         .then((el) => !!el)
         .catch(() => false);
 
-      if (clicked && inSpeakerView) {
+      if (inSpeakerView) {
         log.info("zoomBot", "Switched to Speaker View successfully.");
-      } else if (clicked) {
-        log.info("zoomBot", "Clicked Speaker View option — could not verify selector, may already be active.");
       } else {
-        log.info("zoomBot", "Speaker View option not found in View menu — layout unchanged.");
+        log.info("zoomBot", "Speaker View not confirmed — staying in current layout.");
       }
     } catch (err) {
       log.warn("zoomBot", `Switch to Speaker View failed (non-fatal): ${err.message}`);

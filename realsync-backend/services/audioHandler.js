@@ -7,7 +7,35 @@ const log = require("../lib/logger");
 const MAX_AUDIO_BUFFER_CHUNKS = 128;
 const AUDIO_ANALYSIS_INTERVAL_MS = 3_000;
 const AUDIO_DEEPFAKE_ENABLED = process.env.AUDIO_DEEPFAKE_ENABLED !== "false";
-const RMS_SILENCE_THRESHOLD = 100; // PCM16 range -32768..32767; below this = silence
+const RMS_SILENCE_THRESHOLD = 500; // PCM16 range -32768..32767; below this = silence
+
+// Audio score decay: hold last score for 20s, then decay to 0 over 20s
+const _lastAudioScores = new Map(); // sessionId → { score: number, ts: number }
+
+/**
+ * Returns an effective audio authenticity score that smooths over silent periods.
+ * If currentScore > 0.1: updates the held value and returns it directly.
+ * Within 20 s of the last real score: returns the last held value unchanged.
+ * Between 20–40 s: linearly decays the held value to 0.
+ * After 40 s: evicts the entry and returns 0.
+ *
+ * @param {string} sessionId
+ * @param {number} currentScore  Raw score from the AI pipeline (0–1).
+ * @returns {number}
+ */
+function getEffectiveAudioScore(sessionId, currentScore) {
+  if (currentScore > 0.1) {
+    _lastAudioScores.set(sessionId, { score: currentScore, ts: Date.now() });
+    return currentScore;
+  }
+  const last = _lastAudioScores.get(sessionId);
+  if (!last) return 0;
+  const elapsed = (Date.now() - last.ts) / 1000;
+  if (elapsed < 20) return last.score;
+  if (elapsed < 40) return Math.round(last.score * (1 - (elapsed - 20) / 20) * 100) / 100;
+  _lastAudioScores.delete(sessionId);
+  return 0;
+}
 
 /**
  * Combine base64 audio chunks into a single base64 string.
@@ -63,6 +91,7 @@ function processAudioChunk(session, dataB64) {
     if (rmsEnergy < RMS_SILENCE_THRESHOLD) {
       // Silence detected — skip AI analysis to avoid false "spoofed" flags
       session.audioHasSignal = false;
+      log.info("audio", `Chunk skipped: RMS ${rmsEnergy.toFixed(0)} below threshold`);
       return;
     }
     session.audioHasSignal = true;
@@ -73,10 +102,11 @@ function processAudioChunk(session, dataB64) {
       .then((res) => {
         session.audioAnalysisInFlight = false;
         if (res?.audio?.authenticityScore != null) {
-          session.audioAuthenticityScore = res.audio.authenticityScore;
+          const effectiveAudioScore = getEffectiveAudioScore(session.id, res.audio.authenticityScore);
+          session.audioAuthenticityScore = effectiveAudioScore;
           if (session.metrics) {
             session.metrics.confidenceLayers = session.metrics.confidenceLayers || {};
-            session.metrics.confidenceLayers.audio = res.audio.authenticityScore;
+            session.metrics.confidenceLayers.audio = effectiveAudioScore;
           }
           // Fix 2: Recompute trust and broadcast so frontend sees audio updates
           // C5 fix: Use raw deepfake authenticityScore (not composite trustScore) to avoid double-counting
@@ -84,7 +114,7 @@ function processAudioChunk(session, dataB64) {
             const behaviorConf = session.metrics.confidenceLayers?.behavior || 0.55;
             const videoSignal = session.metrics.deepfake?.authenticityScore
               ?? session.metrics.confidenceLayers?.video ?? 0.5;
-            const audioScore = res.audio.authenticityScore;
+            const audioScore = effectiveAudioScore;
             const finalTrust = 0.45 * videoSignal + 0.35 * audioScore + 0.20 * behaviorConf;
             session.metrics.trustScore = Math.max(0, Math.min(1, parseFloat(finalTrust.toFixed(4))));
           }

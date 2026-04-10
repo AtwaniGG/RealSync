@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
 } from 'recharts'
-import { Shield, AlertTriangle, Users, Zap, Eye, Mic, Brain, AlertCircle, Info, Square } from 'lucide-react'
+import { Shield, AlertTriangle, Users, Zap, Eye, Mic, Brain, AlertCircle, Info } from 'lucide-react'
 import BentoCard from '../components/ui/BentoCard'
 import TrustGauge from '../components/ui/TrustGauge'
 import $ from '../lib/tokens'
@@ -193,7 +193,7 @@ function TimelineChart({ data, height, margin, interval }: { data: TrustPoint[];
 
 export default function Dashboard() {
   const isMobile = useIsMobile()
-  const { activeSession, handleEndSession } = useSessionContext()
+  const { activeSession } = useSessionContext()
   const { isConnected } = useWebSocket()
 
   const [metrics, setMetrics] = useState<LiveMetrics>(DEFAULT_METRICS)
@@ -312,23 +312,6 @@ export default function Dashboard() {
             No active session.
           </div>
         )}
-        {activeSession && (
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button
-              onClick={handleEndSession}
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-                padding: '6px 14px', borderRadius: 8,
-                background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.25)',
-                color: '#EF4444', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                fontFamily: 'Inter, sans-serif',
-              }}
-            >
-              <Square size={12} /> End Session
-            </button>
-          </div>
-        )}
-
         {/* Stat cards 2×2 */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           {statCards.map((card, i) => (
@@ -389,24 +372,6 @@ export default function Dashboard() {
     }}>
       {/* No session banner */}
       {noSessionBanner}
-
-      {/* End Session button — shown when session is active */}
-      {activeSession && (
-        <div style={{ gridColumn: 'span 12', display: 'flex', justifyContent: 'flex-end', marginBottom: -4 }}>
-          <button
-            onClick={handleEndSession}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6,
-              padding: '6px 14px', borderRadius: 8,
-              background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.25)',
-              color: '#EF4444', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-              fontFamily: 'Inter, sans-serif', transition: 'all 150ms',
-            }}
-          >
-            <Square size={12} /> End Session
-          </button>
-        </div>
-      )}
 
       {/* Stat cards — row 1 */}
       {statCards.map((card, i) => (

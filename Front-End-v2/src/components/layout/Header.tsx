@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Moon, Sun, Search, Menu, Clock, Settings, LogOut } from 'lucide-react'
+import { Moon, Sun, Search, Menu, Clock, Settings, LogOut, Square } from 'lucide-react'
 import $ from '../../lib/tokens'
 import { getTheme, setTheme, MONO_STYLE } from '../../lib/tokens'
 import { useSessionContext } from '../../contexts/SessionContext'
@@ -20,7 +20,7 @@ export default function Header({ onCmdK, onHamburger }: HeaderProps) {
   const [theme, setThemeState] = useState<'dark' | 'light'>(getTheme)
   const [avatarOpen, setAvatarOpen] = useState(false)
 
-  const { profile, supabaseSession, activeSession, handleSignOut } = useSessionContext()
+  const { profile, supabaseSession, activeSession, handleEndSession, handleSignOut } = useSessionContext()
 
   const PROTOTYPE_MODE = import.meta.env.VITE_PROTOTYPE_MODE === '1'
 
@@ -144,6 +144,18 @@ export default function Header({ onCmdK, onHamburger }: HeaderProps) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
             <Clock size={11} color={$.t3} />
             <span style={{ fontSize: 11, ...MONO_STYLE, color: $.t1 }}>{mm}:{ss}</span>
+            <button
+              onClick={handleEndSession}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.20)',
+                color: '#EF4444', cursor: 'pointer', fontFamily: 'Inter, sans-serif',
+                transition: 'all 150ms',
+              }}
+            >
+              <Square size={10} /> End
+            </button>
           </div>
         )}
 
