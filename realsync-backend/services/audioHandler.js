@@ -96,8 +96,18 @@ function processAudioChunk(session, dataB64) {
     rmsEnergy = Math.sqrt(rmsEnergy / (pcmBuf.length / 2));
 
     if (rmsEnergy < RMS_SILENCE_THRESHOLD) {
-      // Silence detected — skip AI analysis to avoid false "spoofed" flags
+      // Silence detected — skip AI analysis to avoid false "spoofed" flags.
+      // Still tick the hold/decay clock so the stored score fades to 0 over time
+      // instead of freezing at the last speech value.
       session.audioHasSignal = false;
+      const decayed = getEffectiveAudioScore(session.id, 0);
+      session.audioAuthenticityScore = decayed;
+      if (session.metrics) {
+        session.metrics.confidenceLayers = session.metrics.confidenceLayers || {};
+        session.metrics.confidenceLayers.audio = decayed;
+        session.metrics.timestamp = new Date().toISOString();
+        broadcastToSession(session.id, { type: "metrics", data: session.metrics });
+      }
       log.info("audio", `Chunk skipped: RMS ${rmsEnergy.toFixed(0)} below threshold`);
       return;
     }
