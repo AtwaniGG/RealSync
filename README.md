@@ -282,7 +282,7 @@ RealSync/
 - Native SDK integration (not browser-based)
 - Supports Zoom, Google Meet, Microsoft Teams
 
----
+-
 
 ## Documentation
 
